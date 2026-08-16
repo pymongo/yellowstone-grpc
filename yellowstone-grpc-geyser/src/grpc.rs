@@ -41,13 +41,13 @@ use {
     futures::Stream,
     log::{error, info},
     prost_types::Timestamp,
+    rustc_hash::FxHashMap,
     rustls::{
         pki_types::{pem::PemObject, PrivateKeyDer},
         ServerConfig,
     },
     solana_clock::{BankId, Slot, MAX_RECENT_BLOCKHASHES},
     std::{
-        collections::HashMap,
         io,
         num::NonZeroUsize,
         ops::Range,
@@ -124,8 +124,8 @@ impl BlockhashStatus {
 
 #[derive(Debug, Default)]
 struct BlockMetaStorageInner {
-    blocks: HashMap<u64, Arc<MessageBlockMeta>>,
-    blockhashes: HashMap<String, BlockhashStatus>,
+    blocks: FxHashMap<u64, Arc<MessageBlockMeta>>,
+    blockhashes: FxHashMap<String, BlockhashStatus>,
     processed: Option<u64>,
     confirmed: Option<u64>,
     finalized: Option<u64>,
@@ -499,7 +499,7 @@ fn route_held<'a>(held: &mut Vec<BankId>, message: &'a Message) -> HeldMessage<'
 /// it returns an error when trying to create a new subscription.
 #[derive(Clone)]
 struct SubscriptionTracker {
-    counters: Arc<StdMutex<HashMap<String, usize>>>,
+    counters: Arc<StdMutex<FxHashMap<String, usize>>>,
     subscription_limit: NonZeroUsize,
     limit_enforce: bool,
 }
@@ -507,7 +507,7 @@ struct SubscriptionTracker {
 impl SubscriptionTracker {
     fn new(subscription_limit: NonZeroUsize, limit_enforce: bool) -> Self {
         Self {
-            counters: Arc::new(StdMutex::new(HashMap::new())),
+            counters: Arc::new(StdMutex::new(FxHashMap::default())),
             subscription_limit,
             limit_enforce,
         }
@@ -1484,15 +1484,14 @@ impl GrpcService {
                             solana_commitment_config::CommitmentLevel::Confirmed => CommitmentLevel::Confirmed,
                             solana_commitment_config::CommitmentLevel::Finalized => CommitmentLevel::Finalized,
                         };
-                        // Processed must be sent differently, since processed geyser event were individually sent,
-                        // we only need to send Message::Block for block subscriber downstream.
-                        // While, confirmed,finalized must be sent in the two flavors: as a stream of individual events and block.
+                        // Processed must be sent differently, since processed geyser event were individually sent.
+                        // Confirmed/finalized still get the stream of individual events.
+                        // Message::Block (full reconstructed block) is disabled: no client subscribes to `blocks`.
                         if commitment_level != CommitmentLevel::Processed {
                             broadcast.send(commitment_level, frozen_block.messages());
                         }
 
                         let mut block_messages = Vec::with_capacity(3);
-                        block_messages.push(Message::Block(frozen_block.get_message_block()));
                         if let Some(block_footer) = frozen_block.get_block_footer() {
                             block_messages.push(Message::BlockFooter(block_footer));
                         }
@@ -1553,11 +1552,7 @@ impl GrpcService {
                         replayed_messages.push(ReplayResponseMessageType::Single(Message::Slot(replayed_slot.frozen_block.created_bank())));
                         replayed_messages.push(ReplayResponseMessageType::Batch(Arc::clone(&bank_messages), created_bank_index..bank_messages.len()));
 
-                        // 2nd Put the reconstructed block, then the block summary — mirrors the
-                        // live broadcast path so `blocks` subscribers can resume via `from_slot`
-                        replayed_messages.push(ReplayResponseMessageType::Single(Message::Block(replayed_slot.frozen_block.get_message_block())));
-
-                        // 3rd Put block footer, which must come before the block summary
+                        // Put block footer, which must come before the block summary
                         if let Some(block_footer) = replayed_slot.frozen_block.get_block_footer() {
                             replayed_messages.push(ReplayResponseMessageType::Single(Message::BlockFooter(block_footer)));
                         }
@@ -2715,7 +2710,7 @@ mod tests {
         },
         solana_pubkey::Pubkey,
         solana_signature::Signature,
-        std::time::Instant,
+        std::{collections::HashMap, time::Instant},
         yellowstone_grpc_proto::prelude::{
             SubscribeRequest, SubscribeRequestAccountsDataSlice, SubscribeRequestFilterBlocks,
             SubscribeRequestFilterSlots,
@@ -3688,7 +3683,6 @@ mod tests {
                 },
                 stream::tokio::BatchStreamUnboundedReceiver,
             },
-            foldhash::{HashSet as FoldHashSet, HashSetExt as _},
             prost_types::Timestamp,
             solana_hash::Hash,
             solana_message::{legacy::Message as SolMessage, MessageHeader},
@@ -3781,7 +3775,7 @@ mod tests {
                     signature,
                     is_vote: false,
                     transaction: convert_to::create_transaction(&versioned),
-                    static_account_keys: FoldHashSet::new(),
+                    static_account_keys: FxHashSet::default(),
                     loaded_writable_addresses: vec![],
                     loaded_readonly_addresses: vec![],
                     completed_data_set_starting_shred_index: 0,

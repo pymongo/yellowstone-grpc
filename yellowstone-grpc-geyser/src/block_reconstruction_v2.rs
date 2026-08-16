@@ -4,12 +4,11 @@ use {
         plugin::{
             filter::encoder::TransactionEncoder,
             message::{
-                Message, MessageAccount, MessageBlock, MessageBlockFooter, MessageBlockMeta,
-                MessageEntry, MessageSlot, MessageTransaction, SlotStatus,
+                Message, MessageBlockFooter, MessageBlockMeta, MessageSlot, MessageTransaction, SlotStatus,
             },
         },
     },
-    foldhash::{HashMap as FoldHashMap, HashMapExt},
+    rustc_hash::FxHashMap,
     solana_clock::{BankId, Slot},
     solana_commitment_config::CommitmentLevel,
     solana_pubkey::Pubkey,
@@ -117,12 +116,10 @@ struct BankBuffer {
     // Set when the bank writes `ALPENGLOW_CLOCK_ACCOUNT`; the footer is then required to seal.
     footer_expected: bool,
     original_messages: Vec<Message>,
-    account_write_version_map: FoldHashMap<Pubkey, u64>,
+    account_write_version_map: FxHashMap<Pubkey, u64>,
     blockmeta: Option<Arc<MessageBlockMeta>>,
     footer: Option<Arc<MessageBlockFooter>>,
     transactions: Vec<Arc<MessageTransaction>>,
-    accounts: Vec<Arc<MessageAccount>>,
-    entries: Vec<Arc<MessageEntry>>,
     is_sealed: bool,
 }
 
@@ -136,12 +133,13 @@ impl BankBuffer {
             musthave_sysvar_accounts_bitmask: 0,
             footer_expected: false,
             original_messages: Vec::with_capacity(4096),
-            account_write_version_map: FoldHashMap::with_capacity(4096),
+            account_write_version_map: FxHashMap::with_capacity_and_hasher(
+                4096,
+                Default::default(),
+            ),
             blockmeta: None,
             footer: None,
             transactions: Vec::with_capacity(4096),
-            accounts: Vec::with_capacity(4096),
-            entries: Vec::with_capacity(64),
             is_sealed: false,
         }
     }
@@ -167,7 +165,6 @@ impl BankBuffer {
                 if message_account.account.pubkey == *ALPENGLOW_CLOCK_ACCOUNT {
                     self.footer_expected = true;
                 }
-                self.accounts.push(Arc::clone(message_account));
             }
             Message::Transaction(message_transaction) => {
                 if message_transaction.transaction.get_pre_encoded().is_none() {
@@ -175,9 +172,7 @@ impl BankBuffer {
                 }
                 self.transactions.push(Arc::clone(message_transaction));
             }
-            Message::Entry(message_entry) => {
-                self.entries.push(Arc::clone(message_entry));
-            }
+            Message::Entry(_) => {}
             Message::Slot(message_slot)
                 if message_slot.status == SlotStatus::CreatedBank
                     && self.created_bank.is_none() =>
@@ -208,10 +203,7 @@ impl BankBuffer {
             return Err(TrySealError::NotSealable);
         }
 
-        let expected_entry_count = blockmeta.entries_count as usize;
-        if self.entries.len() < expected_entry_count {
-            return Err(TrySealError::NotSealable);
-        }
+        // Entry notifications are disabled on this RPC node.
         if self.footer_expected && self.footer.is_none() {
             return Err(TrySealError::NotSealable);
         }
@@ -221,16 +213,6 @@ impl BankBuffer {
 
     fn seal(self) -> FrozenBank {
         let block_meta = self.blockmeta.expect("should be sealable");
-        let account_info_vec = self
-            .accounts
-            .into_iter()
-            .filter_map(|account| {
-                let write_version = self
-                    .account_write_version_map
-                    .get(&account.account.pubkey)?;
-                (*write_version == account.account.write_version).then_some(account)
-            })
-            .collect::<Vec<_>>();
         let created_bank = self.created_bank.expect("should be sealable");
         // The bank's content without its `CreatedBank`, which is kept apart: live
         // Confirmed/Finalized clients already got it when the bank was created.
@@ -267,14 +249,6 @@ impl BankBuffer {
             );
         }
 
-        let pre_computed_message_block = Arc::new(MessageBlock::new(
-            Arc::clone(&block_meta),
-            Arc::clone(&created_bank),
-            self.transactions,
-            account_info_vec,
-            self.entries,
-        ));
-
         FrozenBank {
             bank_id: self.bank_id,
             slot: self.slot,
@@ -283,7 +257,6 @@ impl BankBuffer {
             created_bank_index,
             block_meta,
             block_footer: self.footer,
-            pre_computed_message_block,
         }
     }
 }
@@ -299,14 +272,9 @@ pub struct FrozenBank {
     created_bank_index: usize,
     block_meta: Arc<MessageBlockMeta>,
     block_footer: Option<Arc<MessageBlockFooter>>,
-    pre_computed_message_block: Arc<MessageBlock>,
 }
 
 impl FrozenBank {
-    pub fn get_message_block(&self) -> Arc<MessageBlock> {
-        Arc::clone(&self.pre_computed_message_block)
-    }
-
     /// The bank's content in arrival order, without its `CreatedBank`. See
     /// [`Self::created_bank`] and [`Self::created_bank_index`] to put it back.
     pub fn messages(&self) -> Arc<Vec<Message>> {
@@ -418,22 +386,22 @@ impl<'storage> Iterator for ReplayIter<'storage> {
 /// the canonical bank for its slot, every sibling buffer for that slot is discarded.
 pub struct BlockMachineStorage {
     // Bank instances still accumulating content, keyed by bank_id.
-    banks: FoldHashMap<BankId, BankBuffer>,
+    banks: FxHashMap<BankId, BankBuffer>,
     // Every bank_id ever seen for a slot, so the losers can be found once a winner is known.
-    slot_to_banks: FoldHashMap<Slot, Vec<BankId>>,
+    slot_to_banks: FxHashMap<Slot, Vec<BankId>>,
     // bank_ids explicitly discarded as losers (via `discard_losing_banks`) or abandoned
     // (via `handle_dead_slot`), paired with the slot they belonged to so `sweep_stale_slots`
     // can age them out. A straggler event arriving afterward for one of these is ignored
     // outright rather than reviving a fresh buffer for it -- distinct from a bank_id that
     // simply hasn't been resolved as a winner *yet*, which must still be allowed to
     // accumulate normally (see `processed_banks_are_peers_until_one_is_confirmed`).
-    discarded_bank_ids: FoldHashMap<BankId, Slot>,
+    discarded_bank_ids: FxHashMap<BankId, Slot>,
     // Banks that received their own Processed status, paired with their slot so
     // `sweep_stale_slots` can age them out. Processed is delivered per bank, not per slot:
     // agave reports Processed for every bank it freezes, including a replacement for a bank
     // of the same slot that was already delivered, so a bank in here is delivered at
     // Processed as soon as it seals, whether or not it is its slot's resolved bank.
-    processed_bank_ids: FoldHashMap<BankId, Slot>,
+    processed_bank_ids: FxHashMap<BankId, Slot>,
     // The bank_id currently believed to be a slot's canonical bank. Multiple banks for the
     // same slot can be simultaneously Processed with no precedence between them -- a
     // Processed sighting never sets or changes this (see `handle_commitment_update`) --
@@ -446,11 +414,11 @@ pub struct BlockMachineStorage {
     // `try_infer_sole_candidate_winner`'s single-candidate inference, which may set this
     // ahead of any direct status update when there's only ever been one bank_id for the
     // slot at all.
-    resolved_bank_per_slot: FoldHashMap<Slot, BankId>,
+    resolved_bank_per_slot: FxHashMap<Slot, BankId>,
     // The highest commitment level a slot must be treated as having reached, whether from a
     // direct status update or inherited from a confirmed/finalized descendant.
-    slot_min_commitment: FoldHashMap<Slot, CommitmentLevel>,
-    slot_commitment_progression_map: FoldHashMap<Slot, SlotProgression>,
+    slot_min_commitment: FxHashMap<Slot, CommitmentLevel>,
+    slot_commitment_progression_map: FxHashMap<Slot, SlotProgression>,
     // Content available for replay, per slot. Holds every sealed candidate bank for a slot
     // that hasn't resolved a winner yet -- so a replay request can be served even while a
     // slot is genuinely ambiguous between two or more banks, all at Processed, with none
@@ -472,13 +440,13 @@ pub struct BlockMachineStorage {
 impl BlockMachineStorage {
     pub fn new(replayed_capacity: usize) -> Self {
         Self {
-            banks: FoldHashMap::with_capacity(replayed_capacity),
-            slot_to_banks: FoldHashMap::with_capacity(replayed_capacity),
-            discarded_bank_ids: FoldHashMap::new(),
-            processed_bank_ids: FoldHashMap::new(),
-            resolved_bank_per_slot: FoldHashMap::with_capacity(replayed_capacity),
-            slot_min_commitment: FoldHashMap::with_capacity(replayed_capacity),
-            slot_commitment_progression_map: FoldHashMap::with_capacity(replayed_capacity),
+            banks: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
+            slot_to_banks: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
+            discarded_bank_ids: FxHashMap::default(),
+            processed_bank_ids: FxHashMap::default(),
+            resolved_bank_per_slot: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
+            slot_min_commitment: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
+            slot_commitment_progression_map: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
             replayed_slot: BTreeMap::new(),
             ready_queue: VecDeque::with_capacity(replayed_capacity),
             replayed_capacity,

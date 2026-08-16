@@ -1,10 +1,8 @@
 use {
     crate::{auth::SubscriptionInfo, metrics},
     http::{request::Parts, uri::PathAndQuery},
-    std::{
-        collections::HashMap,
-        sync::{LazyLock, Mutex},
-    },
+    rustc_hash::FxHashMap,
+    std::sync::{LazyLock, Mutex},
     yellowstone_grpc_tools::server::tonic::metered::{MeteredBandwidthHooks, MeteredManager},
 };
 
@@ -13,8 +11,13 @@ pub const X_SUBSCRIPTION_ID_HEADER: &str = "x-subscription-id";
 pub const UNKNOWN_SUBSCRIBER_ID: &str = "unknown";
 
 static ACTIVE_METERED_BODIES_PER_SUBSCRIBER_ID: LazyLock<
-    Mutex<HashMap<(String /* subscriber_id */, String /* uri_path */), u64 /* active bodies */>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+    Mutex<
+        FxHashMap<
+            (String /* subscriber_id */, String /* uri_path */),
+            u64, /* active bodies */
+        >,
+    >,
+> = LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
 fn increment_active_metered_bodies_for_subscriber_and_path(subscriber_id: &str, uri_path: &str) {
     let mut active_by_subscriber = ACTIVE_METERED_BODIES_PER_SUBSCRIBER_ID

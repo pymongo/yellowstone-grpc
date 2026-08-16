@@ -21,7 +21,6 @@ keywords = ["solana"]
 publish = false
 
 [workspace.dependencies]
-foldhash = "0.2.0"
 affinity = "0.1.2"
 anyhow = "1.0.103"
 arc-swap = "1.0.0"
@@ -77,6 +76,7 @@ quote = "1"
 rand = "0.10.1"
 rayon = "1.11.0"
 reqwest = { version = "0.13.0" }
+rustc-hash = "2.1"
 rustls = "0.23.0"
 serde = "1.0.145"
 serde_json = "1.0.86"

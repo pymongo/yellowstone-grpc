@@ -1,9 +1,11 @@
-use std::{
-    borrow::Borrow,
-    collections::HashSet,
-    ops::Deref,
-    sync::Arc,
-    time::{Duration, Instant},
+use {
+    rustc_hash::FxHashSet,
+    std::{
+        borrow::Borrow,
+        ops::Deref,
+        sync::Arc,
+        time::{Duration, Instant},
+    },
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -52,7 +54,7 @@ impl FilterName {
 #[derive(Debug)]
 pub struct FilterNames {
     name_size_limit: usize,
-    names: HashSet<FilterName>,
+    names: FxHashSet<FilterName>,
     names_size_limit: usize,
     cleanup_ts: Instant,
     cleanup_interval: Duration,
@@ -66,7 +68,7 @@ impl FilterNames {
     ) -> Self {
         Self {
             name_size_limit,
-            names: HashSet::with_capacity(names_size_limit),
+            names: FxHashSet::with_capacity_and_hasher(names_size_limit, Default::default()),
             names_size_limit,
             cleanup_ts: Instant::now(),
             cleanup_interval,
