@@ -21,7 +21,6 @@ default = []
 bench = ["dep:solana-storage-proto"]
 
 [dependencies]
-foldhash = { workspace = true }
 arc-swap = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
@@ -47,6 +46,7 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 rayon = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
+rustc-hash = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -110,6 +110,7 @@ anyhow = { workspace = true }
 cargo-lock = { workspace = true }
 git-version = { workspace = true }
 protoc-bin-vendored = { workspace = true }
+rustc-hash = { workspace = true }
 tonic-build = { workspace = true }
 tonic-prost-build = { workspace = true }
 vergen = { workspace = true, features = ["build", "rustc"] }

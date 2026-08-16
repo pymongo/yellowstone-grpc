@@ -20,8 +20,8 @@ use {
     },
     base64::{engine::general_purpose::STANDARD as base64_engine, Engine},
     bytes::buf::BufMut,
-    foldhash::{HashMap as FoldHashMap, HashMapExt, HashSet as FoldHashSet, HashSetExt},
     prost::encoding::{encode_key, encode_varint, WireType},
+    rustc_hash::{FxHashMap, FxHashSet},
     solana_pubkey::{ParsePubkeyError, Pubkey},
     solana_signature::{ParseSignatureError, Signature},
     spl_token_2022_interface::{
@@ -49,14 +49,14 @@ use {
 #[derive(Debug, Clone)]
 struct HybridSet<T> {
     vec: Vec<T>,
-    set: FoldHashSet<T>,
+    set: FxHashSet<T>,
 }
 
 impl<T: Eq + std::hash::Hash> HybridSet<T>
 where
     T: Clone,
 {
-    fn new_with_set(set: FoldHashSet<T>) -> Self {
+    fn new_with_set(set: FxHashSet<T>) -> Self {
         let vec = set.iter().cloned().collect();
         Self { vec, set }
     }
@@ -270,7 +270,7 @@ impl Filter {
         // `accounts.account` is indexed by pubkey -> set(filter_name).
         // For complexity we need the inverse shape (filter_name -> count(pubkeys)),
         // so we accumulate how many pubkeys point to each filter.
-        let mut account_pubkey_hits = HashMap::new();
+        let mut account_pubkey_hits = FxHashMap::default();
         for filter_names in self.accounts.account.values() {
             for filter_name in filter_names {
                 *account_pubkey_hits
@@ -281,7 +281,7 @@ impl Filter {
 
         // Same inversion for owner constraints: owner pubkey -> set(filter_name)
         // becomes per-filter owner count.
-        let mut owner_pubkey_hits = HashMap::new();
+        let mut owner_pubkey_hits = FxHashMap::default();
         for filter_names in self.accounts.owner.values() {
             for filter_name in filter_names {
                 *owner_pubkey_hits
@@ -384,7 +384,7 @@ impl Filter {
 
     fn decode_pubkeys<'a>(
         pubkeys: &'a [String],
-        limit: &'a FoldHashSet<Pubkey>,
+        limit: &'a FxHashSet<Pubkey>,
     ) -> impl Iterator<Item = FilterResult<Pubkey>> + 'a {
         pubkeys.iter().map(|value| {
             let pubkey = Pubkey::from_str(value)?;
@@ -395,8 +395,8 @@ impl Filter {
 
     fn decode_pubkeys_into_set(
         pubkeys: &[String],
-        limit: &FoldHashSet<Pubkey>,
-    ) -> FilterResult<FoldHashSet<Pubkey>> {
+        limit: &FxHashSet<Pubkey>,
+    ) -> FilterResult<FxHashSet<Pubkey>> {
         Self::decode_pubkeys(pubkeys, limit).collect::<FilterResult<_>>()
     }
 
@@ -519,10 +519,10 @@ impl FilterAccountAggregate {
 #[derive(Debug, Default, Clone)]
 struct FilterAccounts {
     nonempty_txn_signature: Vec<(FilterName, Option<bool>)>,
-    account: FoldHashMap<Pubkey, FoldHashSet<FilterName>>,
-    account_cuckoo: FoldHashMap<FilterName, Arc<CuckooFilter<[u8; 32]>>>,
-    owner: FoldHashMap<Pubkey, FoldHashSet<FilterName>>,
-    state_check: FoldHashMap<FilterName, FilterAccountsState>,
+    account: FxHashMap<Pubkey, FxHashSet<FilterName>>,
+    account_cuckoo: FxHashMap<FilterName, Arc<CuckooFilter<[u8; 32]>>>,
+    owner: FxHashMap<Pubkey, FxHashSet<FilterName>>,
+    state_check: FxHashMap<FilterName, FilterAccountsState>,
     aggregates: Vec<FilterAccountAggregate>,
 }
 
@@ -600,7 +600,7 @@ impl FilterAccounts {
     }
 
     fn set(
-        map: &mut FoldHashMap<Pubkey, FoldHashSet<FilterName>>,
+        map: &mut FxHashMap<Pubkey, FxHashSet<FilterName>>,
         filter_name: FilterName,
         keys: impl Iterator<Item = FilterResult<Pubkey>>,
     ) -> FilterResult<()> {
@@ -785,11 +785,11 @@ impl FilterAccountsLamports {
 #[derive(Debug)]
 struct FilterAccountsMatch<'a> {
     filter: &'a FilterAccounts,
-    nonempty_txn_signature: FoldHashSet<&'a str>,
-    account: Option<&'a FoldHashSet<FilterName>>,
-    cuckoo: FoldHashSet<&'a str>,
-    owner: Option<&'a FoldHashSet<FilterName>>,
-    data: FoldHashSet<&'a str>,
+    nonempty_txn_signature: FxHashSet<&'a str>,
+    account: Option<&'a FxHashSet<FilterName>>,
+    cuckoo: FxHashSet<&'a str>,
+    owner: Option<&'a FxHashSet<FilterName>>,
+    data: FxHashSet<&'a str>,
 }
 
 impl<'a> FilterAccountsMatch<'a> {
@@ -881,7 +881,7 @@ impl FilterSlotsInner {
 
 #[derive(Debug, Default, Clone)]
 struct FilterSlots {
-    filters: HashMap<FilterName, FilterSlotsInner>,
+    filters: FxHashMap<FilterName, FilterSlotsInner>,
 }
 
 impl FilterSlots {
@@ -994,7 +994,7 @@ impl FilterTransactions {
     ) -> FilterResult<Self> {
         FilterLimits::check_max(configs.len(), limits.max)?;
 
-        let mut filters = HashMap::with_capacity(configs.len());
+        let mut filters = FxHashMap::with_capacity_and_hasher(configs.len(), Default::default());
         for (name, filter) in configs {
             FilterLimits::check_any(
                 filter.vote.is_none()
@@ -1044,11 +1044,11 @@ impl FilterTransactions {
                     )?),
                     account_exclude: HybridSet::new_with_set(Filter::decode_pubkeys_into_set(
                         &filter.account_exclude,
-                        &FoldHashSet::new(),
+                        &FxHashSet::default(),
                     )?),
                     account_required: Filter::decode_pubkeys_into_set(
                         &filter.account_required,
-                        &FoldHashSet::new(),
+                        &FxHashSet::default(),
                     )?
                     .into_iter()
                     .collect(),
@@ -1097,7 +1097,7 @@ impl FilterTransactions {
                 // the pre/post scan runs at most once per (tx, mode) across
                 // all filters evaluating against this tx. A `None`
                 // configured mode skips the scan entirely.
-                let token_owners: Option<&FoldHashSet<Pubkey>> =
+                let token_owners: Option<&FxHashSet<Pubkey>> =
                     inner.token_accounts.map(|mode| match mode {
                         TokenAccountsMode::All => message
                             .transaction
@@ -1180,9 +1180,11 @@ impl FilterTransactions {
 }
 
 /// Owners of every parseable pre OR post token balance on the tx.
-fn owners_in_any_balance(meta: &confirmed_block::TransactionStatusMeta) -> FoldHashSet<Pubkey> {
-    let mut owners =
-        FoldHashSet::with_capacity(meta.pre_token_balances.len() + meta.post_token_balances.len());
+fn owners_in_any_balance(meta: &confirmed_block::TransactionStatusMeta) -> FxHashSet<Pubkey> {
+    let mut owners = FxHashSet::with_capacity_and_hasher(
+        meta.pre_token_balances.len() + meta.post_token_balances.len(),
+        Default::default(),
+    );
     for balance in meta
         .pre_token_balances
         .iter()
@@ -1197,13 +1199,12 @@ fn owners_in_any_balance(meta: &confirmed_block::TransactionStatusMeta) -> FoldH
 
 /// Owners whose token balance changed (compared by `account_index`) between
 /// pre and post, OR whose account was closed (present in pre, missing in post).
-fn owners_with_changed_balance(
-    meta: &confirmed_block::TransactionStatusMeta,
-) -> FoldHashSet<Pubkey> {
+fn owners_with_changed_balance(meta: &confirmed_block::TransactionStatusMeta) -> FxHashSet<Pubkey> {
     let pre_by_index = index_pre_token_balances(&meta.pre_token_balances);
 
-    let mut changed = FoldHashSet::new();
-    let mut seen_in_post = FoldHashSet::with_capacity(meta.post_token_balances.len());
+    let mut changed = FxHashSet::default();
+    let mut seen_in_post =
+        FxHashSet::with_capacity_and_hasher(meta.post_token_balances.len(), Default::default());
 
     for bal in &meta.post_token_balances {
         let Some(pubkey) = parse_token_balance_owner(bal) else {
@@ -1233,8 +1234,8 @@ fn owners_with_changed_balance(
 /// pubkey and a borrowed amount string for comparison against post.
 fn index_pre_token_balances(
     pre: &[confirmed_block::TokenBalance],
-) -> FoldHashMap<u32, (Pubkey, &str)> {
-    let mut by_index = FoldHashMap::with_capacity(pre.len());
+) -> FxHashMap<u32, (Pubkey, &str)> {
+    let mut by_index = FxHashMap::with_capacity_and_hasher(pre.len(), Default::default());
     for bal in pre {
         if let Some(pubkey) = parse_token_balance_owner(bal) {
             by_index.insert(bal.account_index, (pubkey, token_balance_amount(bal)));
@@ -1265,14 +1266,14 @@ fn token_balance_amount(balance: &confirmed_block::TokenBalance) -> &str {
 #[derive(Debug, Clone)]
 struct FilterDeshredTransactionsInner {
     vote: Option<bool>,
-    account_include: FoldHashSet<Pubkey>,
-    account_exclude: FoldHashSet<Pubkey>,
-    account_required: FoldHashSet<Pubkey>,
+    account_include: FxHashSet<Pubkey>,
+    account_exclude: FxHashSet<Pubkey>,
+    account_required: FxHashSet<Pubkey>,
 }
 
 #[derive(Debug, Default, Clone)]
 struct FilterDeshredTransactions {
-    filters: HashMap<FilterName, FilterDeshredTransactionsInner>,
+    filters: FxHashMap<FilterName, FilterDeshredTransactionsInner>,
 }
 
 impl FilterDeshredTransactions {
@@ -1283,7 +1284,7 @@ impl FilterDeshredTransactions {
     ) -> FilterResult<Self> {
         FilterLimits::check_max(configs.len(), limits.max)?;
 
-        let mut filters = HashMap::new();
+        let mut filters = FxHashMap::default();
         for (name, filter) in configs {
             FilterLimits::check_any(
                 filter.vote.is_none()
@@ -1315,11 +1316,11 @@ impl FilterDeshredTransactions {
                     )?,
                     account_exclude: Filter::decode_pubkeys_into_set(
                         &filter.account_exclude,
-                        &FoldHashSet::new(),
+                        &FxHashSet::default(),
                     )?,
                     account_required: Filter::decode_pubkeys_into_set(
                         &filter.account_required,
-                        &FoldHashSet::new(),
+                        &FxHashSet::default(),
                     )?,
                 },
             );
@@ -1357,7 +1358,7 @@ impl FilterDeshredTransactions {
                 }
 
                 if !inner.account_required.is_empty() {
-                    let all_keys: FoldHashSet<&Pubkey> = tx.all_account_keys().collect();
+                    let all_keys: FxHashSet<&Pubkey> = tx.all_account_keys().collect();
                     if !inner
                         .account_required
                         .iter()
@@ -1511,7 +1512,7 @@ impl FilterEntries {
 
 #[derive(Debug, Clone)]
 struct FilterBlocksInner {
-    account_include: FoldHashSet<Pubkey>,
+    account_include: FxHashSet<Pubkey>,
     account_cuckoo: Option<Arc<CuckooFilter<[u8; 32]>>>,
     include_transactions: Option<bool>,
     include_accounts: Option<bool>,
@@ -1520,7 +1521,7 @@ struct FilterBlocksInner {
 
 #[derive(Debug, Default, Clone)]
 struct FilterBlocks {
-    filters: HashMap<FilterName, FilterBlocksInner>,
+    filters: FxHashMap<FilterName, FilterBlocksInner>,
 }
 
 impl FilterBlocks {
@@ -1660,7 +1661,7 @@ impl FilterBlocksInner {
         false
     }
 
-    fn matches_any_in_set(&self, account_keys: &FoldHashSet<Pubkey>) -> bool {
+    fn matches_any_in_set(&self, account_keys: &FxHashSet<Pubkey>) -> bool {
         if self.account_include.is_empty() && self.account_cuckoo.is_none() {
             return true;
         }

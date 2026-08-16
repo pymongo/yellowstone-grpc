@@ -4,9 +4,9 @@ use {
         GeyserPluginError, Result as PluginResult,
     },
     bytesize::ByteSize,
+    rustc_hash::FxHashSet,
     serde::{de, Deserialize, Deserializer},
     std::{
-        collections::HashSet,
         fmt,
         fs::read_to_string,
         net::SocketAddr,
@@ -99,7 +99,7 @@ impl ConfigTokio {
 }
 
 fn parse_taskset(taskset: &str) -> Result<Vec<usize>, String> {
-    let mut set = HashSet::new();
+    let mut set = FxHashSet::default();
     for taskset2 in taskset.split(',') {
         match taskset2.split_once('-') {
             Some((start, end)) => {

@@ -443,15 +443,15 @@ impl GeyserPlugin for Plugin {
     }
 
     fn entry_notifications_enabled(&self) -> bool {
-        true
+        false
     }
 
     fn deshred_transaction_notifications_enabled(&self) -> bool {
-        true
+        false
     }
 
     fn deshred_transaction_alt_resolution_enabled(&self) -> bool {
-        true
+        false
     }
 }
 

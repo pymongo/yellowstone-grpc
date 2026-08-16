@@ -18,7 +18,6 @@ use {
         buf::{Buf, BufMut},
         Bytes,
     },
-    foldhash::{HashSet as FoldHashSet, HashSetExt},
     prost::{
         encoding::{
             encode_key, encode_varint, encoded_len_varint, key_len, message, DecodeContext,
@@ -27,6 +26,7 @@ use {
         DecodeError,
     },
     prost_types::Timestamp,
+    rustc_hash::FxHashSet,
     smallvec::SmallVec,
     solana_pubkey::Pubkey,
     solana_signature::Signature,
@@ -294,7 +294,7 @@ impl FilteredUpdate {
                                 ..confirmed_block::TransactionStatusMeta::default()
                             },
                             index: msg.index as usize,
-                            account_keys: FoldHashSet::new(),
+                            account_keys: FxHashSet::default(),
                             pre_encoded: OnceLock::new(),
                             token_owners_all: OnceLock::new(),
                             token_owners_changed: OnceLock::new(),
@@ -1315,16 +1315,15 @@ pub mod tests {
             },
         },
         bytes::Bytes,
-        foldhash::{HashSet as FoldHashSet, HashSetExt},
         prost::Message,
         prost_types::Timestamp,
+        rustc_hash::{FxHashMap, FxHashSet},
         solana_hash::Hash,
         solana_pubkey::Pubkey,
         solana_signature::Signature,
         solana_storage_proto::convert::generated,
         solana_transaction_status::{ConfirmedBlock, TransactionWithStatusMeta},
         std::{
-            collections::HashMap,
             fs,
             ops::Range,
             str::FromStr,
@@ -1457,7 +1456,7 @@ pub mod tests {
         load_predefined_blocks()
             .into_iter()
             .map(|block| (block.meta.blockhash.clone(), block.meta))
-            .collect::<HashMap<_, _>>()
+            .collect::<FxHashMap<_, _>>()
             .into_values()
             .collect()
     }
@@ -1471,7 +1470,7 @@ pub mod tests {
                     .into_iter()
                     .map(|tx| (tx.transaction.signature, tx))
             })
-            .collect::<HashMap<_, _>>()
+            .collect::<FxHashMap<_, _>>()
             .into_values()
             .collect()
     }
@@ -1495,7 +1494,7 @@ pub mod tests {
                                 transaction: convert_to::create_transaction(&tx.transaction),
                                 meta: convert_to::create_transaction_meta(&tx.meta),
                                 index,
-                                account_keys: FoldHashSet::new(),
+                                account_keys: FxHashSet::default(),
                                 pre_encoded: OnceLock::new(),
                                 token_owners_all: OnceLock::new(),
                                 token_owners_changed: OnceLock::new(),

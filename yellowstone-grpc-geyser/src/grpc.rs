@@ -33,13 +33,13 @@ use {
     futures::Stream,
     log::{error, info},
     prost_types::Timestamp,
+    rustc_hash::FxHashMap,
     rustls::{
         pki_types::{pem::PemObject, PrivateKeyDer},
         ServerConfig,
     },
     solana_clock::{Slot, MAX_RECENT_BLOCKHASHES},
     std::{
-        collections::HashMap,
         io,
         num::NonZeroUsize,
         os::unix::fs::PermissionsExt,
@@ -114,8 +114,8 @@ impl BlockhashStatus {
 
 #[derive(Debug, Default)]
 struct BlockMetaStorageInner {
-    blocks: HashMap<u64, Arc<MessageBlockMeta>>,
-    blockhashes: HashMap<String, BlockhashStatus>,
+    blocks: FxHashMap<u64, Arc<MessageBlockMeta>>,
+    blockhashes: FxHashMap<String, BlockhashStatus>,
     processed: Option<u64>,
     confirmed: Option<u64>,
     finalized: Option<u64>,
@@ -427,7 +427,7 @@ type ReplayStoredSlotsRequest = (CommitmentLevel, Slot, oneshot::Sender<Replayed
 /// it returns an error when trying to create a new subscription.
 #[derive(Clone)]
 struct SubscriptionTracker {
-    counters: Arc<StdMutex<HashMap<String, usize>>>,
+    counters: Arc<StdMutex<FxHashMap<String, usize>>>,
     subscription_limit: NonZeroUsize,
     limit_enforce: bool,
 }
@@ -435,7 +435,7 @@ struct SubscriptionTracker {
 impl SubscriptionTracker {
     fn new(subscription_limit: NonZeroUsize, limit_enforce: bool) -> Self {
         Self {
-            counters: Arc::new(StdMutex::new(HashMap::new())),
+            counters: Arc::new(StdMutex::new(FxHashMap::default())),
             subscription_limit,
             limit_enforce,
         }
@@ -1385,16 +1385,15 @@ impl GrpcService {
                             solana_commitment_config::CommitmentLevel::Confirmed => CommitmentLevel::Confirmed,
                             solana_commitment_config::CommitmentLevel::Finalized => CommitmentLevel::Finalized,
                         };
-                        // Processed must be sent differently, since processed geyser event were individually sent,
-                        // we only need to send Message::Block for block subscriber downstream.
-                        // While, confirmed,finalized must be sent in the two flavors: as a stream of individual events and block.
+                        // Processed must be sent differently, since processed geyser event were individually sent.
+                        // Confirmed/finalized still get the stream of individual events.
+                        // Message::Block (full reconstructed block) is disabled: no client subscribes to `blocks`.
                         if commitment_level != CommitmentLevel::Processed {
                             broadcast.send(commitment_level, frozen_block.messages());
                         }
 
                         let block_meta = Message::BlockMeta(frozen_block.get_block_meta());
-                        let msg_block = Message::Block(frozen_block.get_message_block());
-                        broadcast.send(commitment_level, Arc::new(vec![msg_block, block_meta]));
+                        broadcast.send(commitment_level, Arc::new(vec![block_meta]));
 
                         let slot_message = Message::Slot(Arc::new(MessageSlot {
                             slot: slot_update.slot,
@@ -1444,11 +1443,7 @@ impl GrpcService {
                         // 1st Put data (account/txn/entries)
                         replayed_messages.push(ReplayResponseMessageType::Batch(replayed_slot.frozen_block.messages()));
 
-                        // 2nd Put the reconstructed block, then the block summary — mirrors the
-                        // live broadcast path so `blocks` subscribers can resume via `from_slot`
-                        replayed_messages.push(ReplayResponseMessageType::Single(Message::Block(replayed_slot.frozen_block.get_message_block())));
-
-                        // 3rd Put block summary
+                        // 2nd Put block summary (`blocks` / Message::Block disabled)
                         replayed_messages.push(ReplayResponseMessageType::Single(Message::BlockMeta(replayed_slot.frozen_block.get_block_meta())));
 
                         // 4th Put slot status
@@ -2482,6 +2477,7 @@ mod tests {
             plugin::filter::{limits::FilterLimits, name::FilterNames, Filter},
             util::stream::load_aware_channel,
         },
+        std::collections::HashMap,
         yellowstone_grpc_proto::prelude::{SubscribeRequest, SubscribeRequestFilterSlots},
     };
 
@@ -2760,8 +2756,8 @@ mod tests {
                 },
                 stream::tokio::BatchStreamUnboundedReceiver,
             },
-            foldhash::{HashSet as FoldHashSet, HashSetExt as _},
             prost_types::Timestamp,
+            rustc_hash::FxHashSet,
             solana_message::{legacy::Message as SolMessage, MessageHeader},
             solana_pubkey::Pubkey,
             solana_signature::Signature,
@@ -2845,7 +2841,7 @@ mod tests {
                     signature,
                     is_vote: false,
                     transaction: convert_to::create_transaction(&versioned),
-                    static_account_keys: FoldHashSet::new(),
+                    static_account_keys: FxHashSet::default(),
                     loaded_writable_addresses: vec![],
                     loaded_readonly_addresses: vec![],
                     completed_data_set_starting_shred_index: 0,
