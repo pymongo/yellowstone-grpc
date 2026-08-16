@@ -21,8 +21,8 @@ use {
     },
     base64::{engine::general_purpose::STANDARD as base64_engine, Engine},
     bytes::buf::BufMut,
-    foldhash::{HashMap as FoldHashMap, HashMapExt, HashSet as FoldHashSet, HashSetExt},
     prost::encoding::{encode_key, encode_varint, WireType},
+    rustc_hash::{FxHashMap, FxHashSet},
     solana_pubkey::{ParsePubkeyError, Pubkey},
     solana_signature::{ParseSignatureError, Signature},
     spl_token_2022_interface::{
@@ -50,14 +50,14 @@ use {
 #[derive(Debug, Clone)]
 struct HybridSet<T> {
     vec: Vec<T>,
-    set: FoldHashSet<T>,
+    set: FxHashSet<T>,
 }
 
 impl<T: Eq + std::hash::Hash> HybridSet<T>
 where
     T: Clone,
 {
-    fn new_with_set(set: FoldHashSet<T>) -> Self {
+    fn new_with_set(set: FxHashSet<T>) -> Self {
         let vec = set.iter().cloned().collect();
         Self { vec, set }
     }
@@ -370,7 +370,7 @@ impl Filter {
 
     fn decode_pubkeys<'a>(
         pubkeys: &'a [String],
-        limit: &'a FoldHashSet<Pubkey>,
+        limit: &'a FxHashSet<Pubkey>,
     ) -> impl Iterator<Item = FilterResult<Pubkey>> + 'a {
         pubkeys.iter().map(|value| {
             let pubkey = Pubkey::from_str(value)?;
@@ -381,8 +381,8 @@ impl Filter {
 
     fn decode_pubkeys_into_set(
         pubkeys: &[String],
-        limit: &FoldHashSet<Pubkey>,
-    ) -> FilterResult<FoldHashSet<Pubkey>> {
+        limit: &FxHashSet<Pubkey>,
+    ) -> FilterResult<FxHashSet<Pubkey>> {
         Self::decode_pubkeys(pubkeys, limit).collect::<FilterResult<_>>()
     }
 
@@ -451,9 +451,9 @@ impl Filter {
 struct FilterAccountAggregate {
     pub filter_name: FilterName,
     pub txn_signature: Option<bool>,
-    pub accounts: Option<FoldHashSet<Pubkey>>,
+    pub accounts: Option<FxHashSet<Pubkey>>,
     pub accounts_cuckoo: Option<Arc<CuckooFilter<[u8; 32]>>>,
-    pub owners: Option<FoldHashSet<Pubkey>>,
+    pub owners: Option<FxHashSet<Pubkey>>,
     pub account_state: Option<FilterAccountsState>,
 }
 
@@ -632,8 +632,8 @@ struct FilterAccountsIndex {
     // aggregates/index pairs). Cloned once at construction, off the hot path.
     aggregates: Vec<FilterAccountAggregate>,
 
-    accounts: FoldHashMap<Pubkey, FilterBitSet>,
-    owners: FoldHashMap<Pubkey, FilterBitSet>,
+    accounts: FxHashMap<Pubkey, FilterBitSet>,
+    owners: FxHashMap<Pubkey, FilterBitSet>,
 
     account_fallback: FilterBitSet,
     owner_fallback: FilterBitSet,
@@ -671,8 +671,8 @@ impl FilterAccountsIndex {
         let mut this = Self {
             aggregates: aggregates.to_vec(),
 
-            accounts: FoldHashMap::default(),
-            owners: FoldHashMap::default(),
+            accounts: FxHashMap::default(),
+            owners: FxHashMap::default(),
 
             account_fallback: FilterBitSet::new(aggregates.len()),
             owner_fallback: FilterBitSet::new(aggregates.len()),
@@ -838,8 +838,8 @@ impl LinearScanFilter {
 #[derive(Debug, Clone)]
 struct AllUnconstrainedFilter {
     aggregates: Vec<FilterAccountAggregate>,
-    accounts: FoldHashMap<Pubkey, Vec<usize>>,
-    owners: FoldHashMap<Pubkey, Vec<usize>>,
+    accounts: FxHashMap<Pubkey, Vec<usize>>,
+    owners: FxHashMap<Pubkey, Vec<usize>>,
 }
 
 impl AllUnconstrainedFilter {
@@ -906,7 +906,7 @@ impl AllUnconstrainedFilter {
 struct SingleAxisMergeFilter {
     aggregates: Vec<FilterAccountAggregate>,
     unbounded_is_owner: bool,
-    bounded_hits: FoldHashMap<Pubkey, Vec<usize>>,
+    bounded_hits: FxHashMap<Pubkey, Vec<usize>>,
     bounded_any: Vec<usize>,
 }
 
@@ -972,8 +972,8 @@ impl SingleAxisMergeFilter {
 #[derive(Debug, Clone)]
 struct DualAxisMergeFilter {
     aggregates: Vec<FilterAccountAggregate>,
-    accounts: FoldHashMap<Pubkey, Vec<usize>>,
-    owners: FoldHashMap<Pubkey, Vec<usize>>,
+    accounts: FxHashMap<Pubkey, Vec<usize>>,
+    owners: FxHashMap<Pubkey, Vec<usize>>,
     account_any: Vec<usize>,
     owner_any: Vec<usize>,
 }
@@ -1136,8 +1136,8 @@ impl FilterAccountsStrategy {
         // non indexed (slightly slower) algorithm, used when the index is not
         // available or when the filter is too large to be indexed. each usize
         // inside of the maps/lists below represents an index into `aggregates`.
-        let mut accounts: FoldHashMap<Pubkey, Vec<usize>> = FoldHashMap::default();
-        let mut owners: FoldHashMap<Pubkey, Vec<usize>> = FoldHashMap::default();
+        let mut accounts: FxHashMap<Pubkey, Vec<usize>> = FxHashMap::default();
+        let mut owners: FxHashMap<Pubkey, Vec<usize>> = FxHashMap::default();
         // aggregates unconstrained on each axis, which therefore stay candidates
         // for every message. one carrying a cuckoo belongs in account_any even
         // when it also has an explicit account list, because match_account
@@ -1631,11 +1631,11 @@ impl FilterTransactions {
                     )?),
                     account_exclude: HybridSet::new_with_set(Filter::decode_pubkeys_into_set(
                         &filter.account_exclude,
-                        &FoldHashSet::new(),
+                        &FxHashSet::default(),
                     )?),
                     account_required: Filter::decode_pubkeys_into_set(
                         &filter.account_required,
-                        &FoldHashSet::new(),
+                        &FxHashSet::default(),
                     )?
                     .into_iter()
                     .collect(),
@@ -1684,7 +1684,7 @@ impl FilterTransactions {
                 // the pre/post scan runs at most once per (tx, mode) across
                 // all filters evaluating against this tx. A `None`
                 // configured mode skips the scan entirely.
-                let token_owners: Option<&FoldHashSet<Pubkey>> =
+                let token_owners: Option<&FxHashSet<Pubkey>> =
                     inner.token_accounts.map(|mode| match mode {
                         TokenAccountsMode::All => message
                             .transaction
@@ -1767,9 +1767,11 @@ impl FilterTransactions {
 }
 
 /// Owners of every parseable pre OR post token balance on the tx.
-fn owners_in_any_balance(meta: &confirmed_block::TransactionStatusMeta) -> FoldHashSet<Pubkey> {
-    let mut owners =
-        FoldHashSet::with_capacity(meta.pre_token_balances.len() + meta.post_token_balances.len());
+fn owners_in_any_balance(meta: &confirmed_block::TransactionStatusMeta) -> FxHashSet<Pubkey> {
+    let mut owners = FxHashSet::with_capacity_and_hasher(
+        meta.pre_token_balances.len() + meta.post_token_balances.len(),
+        Default::default(),
+    );
     for balance in meta
         .pre_token_balances
         .iter()
@@ -1784,13 +1786,12 @@ fn owners_in_any_balance(meta: &confirmed_block::TransactionStatusMeta) -> FoldH
 
 /// Owners whose token balance changed (compared by `account_index`) between
 /// pre and post, OR whose account was closed (present in pre, missing in post).
-fn owners_with_changed_balance(
-    meta: &confirmed_block::TransactionStatusMeta,
-) -> FoldHashSet<Pubkey> {
+fn owners_with_changed_balance(meta: &confirmed_block::TransactionStatusMeta) -> FxHashSet<Pubkey> {
     let pre_by_index = index_pre_token_balances(&meta.pre_token_balances);
 
-    let mut changed = FoldHashSet::new();
-    let mut seen_in_post = FoldHashSet::with_capacity(meta.post_token_balances.len());
+    let mut changed = FxHashSet::default();
+    let mut seen_in_post =
+        FxHashSet::with_capacity_and_hasher(meta.post_token_balances.len(), Default::default());
 
     for bal in &meta.post_token_balances {
         let Some(pubkey) = parse_token_balance_owner(bal) else {
@@ -1820,8 +1821,8 @@ fn owners_with_changed_balance(
 /// pubkey and a borrowed amount string for comparison against post.
 fn index_pre_token_balances(
     pre: &[confirmed_block::TokenBalance],
-) -> FoldHashMap<u32, (Pubkey, &str)> {
-    let mut by_index = FoldHashMap::with_capacity(pre.len());
+) -> FxHashMap<u32, (Pubkey, &str)> {
+    let mut by_index = FxHashMap::with_capacity_and_hasher(pre.len(), Default::default());
     for bal in pre {
         if let Some(pubkey) = parse_token_balance_owner(bal) {
             by_index.insert(bal.account_index, (pubkey, token_balance_amount(bal)));
@@ -1852,9 +1853,9 @@ fn token_balance_amount(balance: &confirmed_block::TokenBalance) -> &str {
 #[derive(Debug, Clone)]
 struct FilterDeshredTransactionsInner {
     vote: Option<bool>,
-    account_include: FoldHashSet<Pubkey>,
-    account_exclude: FoldHashSet<Pubkey>,
-    account_required: FoldHashSet<Pubkey>,
+    account_include: FxHashSet<Pubkey>,
+    account_exclude: FxHashSet<Pubkey>,
+    account_required: FxHashSet<Pubkey>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1902,11 +1903,11 @@ impl FilterDeshredTransactions {
                     )?,
                     account_exclude: Filter::decode_pubkeys_into_set(
                         &filter.account_exclude,
-                        &FoldHashSet::new(),
+                        &FxHashSet::default(),
                     )?,
                     account_required: Filter::decode_pubkeys_into_set(
                         &filter.account_required,
-                        &FoldHashSet::new(),
+                        &FxHashSet::default(),
                     )?,
                 },
             );
@@ -1944,7 +1945,7 @@ impl FilterDeshredTransactions {
                 }
 
                 if !inner.account_required.is_empty() {
-                    let all_keys: FoldHashSet<&Pubkey> = tx.all_account_keys().collect();
+                    let all_keys: FxHashSet<&Pubkey> = tx.all_account_keys().collect();
                     if !inner
                         .account_required
                         .iter()
@@ -2098,7 +2099,7 @@ impl FilterEntries {
 
 #[derive(Debug, Clone)]
 struct FilterBlocksInner {
-    account_include: FoldHashSet<Pubkey>,
+    account_include: FxHashSet<Pubkey>,
     account_cuckoo: Option<Arc<CuckooFilter<[u8; 32]>>>,
     include_transactions: Option<bool>,
     include_accounts: Option<bool>,
@@ -2247,7 +2248,7 @@ impl FilterBlocksInner {
         false
     }
 
-    fn matches_any_in_set(&self, account_keys: &FoldHashSet<Pubkey>) -> bool {
+    fn matches_any_in_set(&self, account_keys: &FxHashSet<Pubkey>) -> bool {
         if self.account_include.is_empty() && self.account_cuckoo.is_none() {
             return true;
         }
@@ -2456,8 +2457,8 @@ mod tests {
                 MessageDeshredTransactionInfo, MessageTransaction, MessageTransactionInfo,
             },
         },
-        foldhash::HashSet as FoldHashSet,
         prost_types::Timestamp,
+        rustc_hash::FxHashSet,
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_message::{v0::LoadedAddresses, Message as SolMessage, MessageHeader},
@@ -2504,7 +2505,7 @@ mod tests {
 
         // Probe the transaction-local set when the client filter is smaller.
         let small_filter = FilterBlocksInner {
-            account_include: [shared].into_iter().collect::<FoldHashSet<_>>(),
+            account_include: [shared].into_iter().collect::<FxHashSet<_>>(),
             account_cuckoo: None,
             include_transactions: None,
             include_accounts: None,
@@ -2512,25 +2513,23 @@ mod tests {
         };
         let message_keys = [shared, other_message_keys[0], other_message_keys[1]]
             .into_iter()
-            .collect::<FoldHashSet<_>>();
+            .collect::<FxHashSet<_>>();
         assert!(small_filter.matches_any_in_set(&message_keys));
 
         // Probe the client filter when the transaction-local set is smaller.
         let large_filter = FilterBlocksInner {
             account_include: [shared, other_filter_keys[0], other_filter_keys[1]]
                 .into_iter()
-                .collect::<FoldHashSet<_>>(),
+                .collect::<FxHashSet<_>>(),
             account_cuckoo: None,
             include_transactions: None,
             include_accounts: None,
             include_entries: None,
         };
-        let matching_message_keys = [shared].into_iter().collect::<FoldHashSet<_>>();
+        let matching_message_keys = [shared].into_iter().collect::<FxHashSet<_>>();
         assert!(large_filter.matches_any_in_set(&matching_message_keys));
 
-        let nonmatching_message_keys = [Pubkey::new_unique()]
-            .into_iter()
-            .collect::<FoldHashSet<_>>();
+        let nonmatching_message_keys = [Pubkey::new_unique()].into_iter().collect::<FxHashSet<_>>();
         assert!(!large_filter.matches_any_in_set(&nonmatching_message_keys));
     }
 
@@ -4229,10 +4228,10 @@ mod parity_oracle {
     #[derive(Debug, Default)]
     struct MasterAccountsOracle {
         nonempty_txn_signature: Vec<(FilterName, Option<bool>)>,
-        account: FoldHashMap<Pubkey, FoldHashSet<FilterName>>,
-        account_cuckoo: FoldHashMap<FilterName, Arc<CuckooFilter<[u8; 32]>>>,
-        owner: FoldHashMap<Pubkey, FoldHashSet<FilterName>>,
-        state_check: FoldHashMap<FilterName, FilterAccountsState>,
+        account: FxHashMap<Pubkey, FxHashSet<FilterName>>,
+        account_cuckoo: FxHashMap<FilterName, Arc<CuckooFilter<[u8; 32]>>>,
+        owner: FxHashMap<Pubkey, FxHashSet<FilterName>>,
+        state_check: FxHashMap<FilterName, FilterAccountsState>,
         aggregates: Vec<MasterAggregate>,
     }
 
@@ -4302,7 +4301,7 @@ mod parity_oracle {
         }
 
         fn set(
-            map: &mut FoldHashMap<Pubkey, FoldHashSet<FilterName>>,
+            map: &mut FxHashMap<Pubkey, FxHashSet<FilterName>>,
             filter_name: FilterName,
             keys: impl Iterator<Item = FilterResult<Pubkey>>,
         ) -> FilterResult<()> {
@@ -4315,7 +4314,7 @@ mod parity_oracle {
         }
 
         fn get_filters(&self, account: &MessageAccountInfo) -> FilteredUpdateFilters {
-            let mut nonempty_txn_signature = FoldHashSet::default();
+            let mut nonempty_txn_signature = FxHashSet::default();
             for (name, filter) in self.nonempty_txn_signature.iter() {
                 if let Some(required) = filter {
                     if *required == account.txn_signature.is_some() {
@@ -4326,7 +4325,7 @@ mod parity_oracle {
 
             let matched_account = self.account.get(&account.pubkey);
 
-            let mut cuckoo = FoldHashSet::default();
+            let mut cuckoo = FxHashSet::default();
             if !self.account_cuckoo.is_empty() {
                 let bytes = account.pubkey.to_bytes();
                 for (name, filter) in &self.account_cuckoo {
@@ -4338,7 +4337,7 @@ mod parity_oracle {
 
             let matched_owner = self.owner.get(&account.owner);
 
-            let mut data = FoldHashSet::default();
+            let mut data = FxHashSet::default();
             for (name, account_state) in self.state_check.iter() {
                 if account_state.is_match(&account.data, account.lamports) {
                     data.insert(name.as_ref());

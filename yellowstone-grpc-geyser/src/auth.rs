@@ -8,7 +8,8 @@ use {
     http::{request::Parts, HeaderMap, HeaderName, HeaderValue, StatusCode},
     moka::future::{Cache, CacheBuilder},
     reqwest::{IntoUrl, Url},
-    std::{collections::HashMap, convert::Infallible, str::FromStr, sync::Arc},
+    rustc_hash::FxHashMap,
+    std::{convert::Infallible, str::FromStr, sync::Arc},
     yellowstone_grpc_tools::server::tonic::auth::service::SharedAuthenticator,
 };
 
@@ -188,7 +189,7 @@ pub struct SubscriptionRateLimits {
     #[serde(default = "SubscriptionRateLimits::default_rate_limit")]
     pub default: i32,
     #[serde(default)]
-    pub methods: HashMap<String, i32>,
+    pub methods: FxHashMap<String, i32>,
 }
 
 impl SubscriptionRateLimits {
@@ -201,7 +202,7 @@ impl Default for SubscriptionRateLimits {
     fn default() -> Self {
         Self {
             default: Self::default_rate_limit(),
-            methods: HashMap::from([
+            methods: FxHashMap::from_iter([
                 ("/geyser.Geyser/Subscribe".to_string(), 1000),
                 ("/geyser.Geyser/SubscribeReplayInfo".to_string(), 1000),
                 ("/geyser.Geyser/Ping".to_string(), 1000),
@@ -290,7 +291,7 @@ impl FileBackedAuthConfig {
 /// This is useful for testing or for scenarios where the subscription info is known ahead of time and does not change.
 #[derive(Debug, Clone)]
 pub struct ConstantSubscriptionRepository {
-    hashmap: Arc<HashMap<String, HashMap<String, SubscriptionInfo>>>,
+    hashmap: Arc<FxHashMap<String, FxHashMap<String, SubscriptionInfo>>>,
 }
 
 impl ConstantSubscriptionRepository {
@@ -301,7 +302,8 @@ impl ConstantSubscriptionRepository {
     where
         IT: IntoIterator<Item = (SubscriptionKey, SubscriptionInfo)>,
     {
-        let mut nested: HashMap<String, HashMap<String, SubscriptionInfo>> = HashMap::new();
+        let mut nested: FxHashMap<String, FxHashMap<String, SubscriptionInfo>> =
+            FxHashMap::default();
 
         for (SubscriptionKey { host, token }, info) in hashmap {
             nested.entry(host).or_default().insert(token, info);
@@ -377,7 +379,7 @@ impl TrustedMetadataAuthenticator {
     {
         Self {
             default_ratelimits: Arc::new(SubscriptionRateLimits {
-                methods: HashMap::from_iter(default_ratelimits),
+                methods: FxHashMap::from_iter(default_ratelimits),
                 ..Default::default()
             }),
         }
