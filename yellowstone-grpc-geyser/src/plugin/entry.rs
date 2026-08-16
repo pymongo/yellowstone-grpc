@@ -256,6 +256,13 @@ impl GeyserPlugin for Plugin {
                     incr_geyser_event_dropped("account");
                     return Ok(());
                 }
+                // System-owned empty accounts are fee payers / SOL wallets. Metis/Jup
+                // subscribe to pool state and token vaults, not these. Durable nonce
+                // accounts keep ~80 bytes of data and are not dropped.
+                if owner == Pubkey::default() && account.data.is_empty() {
+                    incr_geyser_event_dropped("account_system_empty");
+                    return Ok(());
+                }
             }
 
             if is_startup {
