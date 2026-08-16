@@ -270,6 +270,13 @@ impl GeyserPlugin for Plugin {
                     incr_geyser_event_dropped("account");
                     return Ok(());
                 }
+                // System-owned empty accounts are fee payers / SOL wallets. Metis/Jup
+                // subscribe to pool state and token vaults, not these. Durable nonce
+                // accounts keep ~80 bytes of data and are not dropped.
+                if owner == Pubkey::default() && account.data.is_empty() {
+                    incr_geyser_event_dropped("account_system_empty");
+                    return Ok(());
+                }
             }
 
             if let Some(channel) = inner.snapshot_channel.lock().unwrap().as_ref() {
@@ -311,6 +318,13 @@ impl GeyserPlugin for Plugin {
                 // Drop accounts from owners in the drop list, even during startup.
                 if inner.filter_limits.accounts.owner_reject.contains(&owner) {
                     incr_geyser_event_dropped("account");
+                    return Ok(());
+                }
+                // System-owned empty accounts are fee payers / SOL wallets. Metis/Jup
+                // subscribe to pool state and token vaults, not these. Durable nonce
+                // accounts keep ~80 bytes of data and are not dropped.
+                if owner == Pubkey::default() && account.data.is_empty() {
+                    incr_geyser_event_dropped("account_system_empty");
                     return Ok(());
                 }
             }
@@ -588,15 +602,15 @@ impl GeyserPlugin for Plugin {
     }
 
     fn entry_notifications_enabled(&self) -> bool {
-        true
+        false
     }
 
     fn deshred_transaction_notifications_enabled(&self) -> bool {
-        true
+        false
     }
 
     fn deshred_transaction_alt_resolution_enabled(&self) -> bool {
-        true
+        false
     }
 
     fn block_footer_notifications_enabled(&self) -> bool {

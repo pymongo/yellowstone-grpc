@@ -220,7 +220,7 @@ mod tests {
     use {
         super::*,
         crate::auth::{SubscriptionInfo, SubscriptionRateLimits},
-        std::collections::HashMap,
+        rustc_hash::FxHashMap,
     };
 
     fn make_request(path: &str, subscription_info: Option<SubscriptionInfo>) -> http::Request<()> {
@@ -255,7 +255,7 @@ mod tests {
             subscription_id: "sub-1".to_string(),
             ratelimits: Some(SubscriptionRateLimits {
                 default: 10,
-                methods: HashMap::from([("/geyser.Geyser/Subscribe".to_string(), 1)]),
+                methods: FxHashMap::from_iter([("/geyser.Geyser/Subscribe".to_string(), 1)]),
             }),
         };
 
@@ -277,7 +277,7 @@ mod tests {
             subscription_id: "sub-1".to_string(),
             ratelimits: Some(SubscriptionRateLimits {
                 default: 1,
-                methods: HashMap::new(),
+                methods: FxHashMap::default(),
             }),
         };
 
@@ -318,14 +318,14 @@ mod tests {
             subscription_id: "sub-a".to_string(),
             ratelimits: Some(SubscriptionRateLimits {
                 default: 10,
-                methods: HashMap::from([("/geyser.Geyser/Subscribe".to_string(), 1)]),
+                methods: FxHashMap::from_iter([("/geyser.Geyser/Subscribe".to_string(), 1)]),
             }),
         };
         let sub_b = SubscriptionInfo {
             subscription_id: "sub-b".to_string(),
             ratelimits: Some(SubscriptionRateLimits {
                 default: 10,
-                methods: HashMap::from([("/geyser.Geyser/Subscribe".to_string(), 1)]),
+                methods: FxHashMap::from_iter([("/geyser.Geyser/Subscribe".to_string(), 1)]),
             }),
         };
 
@@ -353,7 +353,7 @@ mod tests {
             subscription_id: "sub-refresh".to_string(),
             ratelimits: Some(SubscriptionRateLimits {
                 default: 10,
-                methods: HashMap::from([("/geyser.Geyser/Subscribe".to_string(), 1)]),
+                methods: FxHashMap::from_iter([("/geyser.Geyser/Subscribe".to_string(), 1)]),
             }),
         };
 
@@ -373,7 +373,7 @@ mod tests {
                 subscription_id: "sub-refresh".to_string(),
                 ratelimits: Some(SubscriptionRateLimits {
                     default: 10,
-                    methods: HashMap::from([("/geyser.Geyser/Subscribe".to_string(), 1)]),
+                    methods: FxHashMap::from_iter([("/geyser.Geyser/Subscribe".to_string(), 1)]),
                 }),
             }),
         );
@@ -393,14 +393,14 @@ mod tests {
             subscription_id: "gc-a".to_string(),
             ratelimits: Some(SubscriptionRateLimits {
                 default: 10,
-                methods: HashMap::new(),
+                methods: FxHashMap::default(),
             }),
         };
         let sub_b = SubscriptionInfo {
             subscription_id: "gc-b".to_string(),
             ratelimits: Some(SubscriptionRateLimits {
                 default: 10,
-                methods: HashMap::new(),
+                methods: FxHashMap::default(),
             }),
         };
 
@@ -421,7 +421,7 @@ mod tests {
                         subscription_id: "gc-b".to_string(),
                         ratelimits: Some(SubscriptionRateLimits {
                             default: 10,
-                            methods: HashMap::new(),
+                            methods: FxHashMap::default(),
                         }),
                     }),
                 ),
@@ -443,7 +443,7 @@ mod tests {
             subscription_id: "gc-off".to_string(),
             ratelimits: Some(SubscriptionRateLimits {
                 default: 10,
-                methods: HashMap::new(),
+                methods: FxHashMap::default(),
             }),
         };
 

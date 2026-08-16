@@ -7,8 +7,8 @@ use {
         SlotStatus as GeyserSlotStatus,
     },
     bytes::Bytes,
-    foldhash::{HashSet as FoldHashSet, HashSetExt},
     prost_types::Timestamp,
+    rustc_hash::FxHashSet,
     solana_clock::{BankId, Slot},
     solana_hash::{Hash, HASH_BYTES},
     solana_pubkey::Pubkey,
@@ -253,15 +253,15 @@ pub struct MessageTransactionInfo {
     pub transaction: confirmed_block::Transaction,
     pub meta: confirmed_block::TransactionStatusMeta,
     pub index: usize,
-    pub account_keys: FoldHashSet<Pubkey>,
+    pub account_keys: FxHashSet<Pubkey>,
     pub pre_encoded: OnceLock<Vec<u8>>,
     /// Per-tx cache of token-balance owners under `TokenAccountsMode::All`.
     /// Lazily built on first read; shared across all filters evaluating
     /// against this tx so the pre/post scan runs at most once per tx.
-    pub token_owners_all: OnceLock<FoldHashSet<Pubkey>>,
+    pub token_owners_all: OnceLock<FxHashSet<Pubkey>>,
     /// Per-tx cache of token-balance owners under
     /// `TokenAccountsMode::BalanceChanged`. Same laziness as above.
-    pub token_owners_changed: OnceLock<FoldHashSet<Pubkey>>,
+    pub token_owners_changed: OnceLock<FxHashSet<Pubkey>>,
 }
 
 impl MessageTransactionInfo {
@@ -300,7 +300,7 @@ impl MessageTransactionInfo {
     }
 
     pub fn fill_account_keys(&mut self) -> FromUpdateOneofResult<()> {
-        let mut account_keys = FoldHashSet::new();
+        let mut account_keys = FxHashSet::default();
 
         // static
         if let Some(pubkeys) = self
@@ -360,7 +360,7 @@ pub struct MessageDeshredTransactionInfo {
     pub signature: Signature,
     pub is_vote: bool,
     pub transaction: confirmed_block::Transaction,
-    pub static_account_keys: FoldHashSet<Pubkey>,
+    pub static_account_keys: FxHashSet<Pubkey>,
     pub loaded_writable_addresses: Vec<Pubkey>,
     pub loaded_readonly_addresses: Vec<Pubkey>,
     pub completed_data_set_starting_shred_index: u32,
@@ -369,7 +369,7 @@ pub struct MessageDeshredTransactionInfo {
 
 impl MessageDeshredTransactionInfo {
     pub fn from_geyser(info: &ReplicaDeshredTransactionInfo<'_>) -> Self {
-        let static_account_keys: FoldHashSet<Pubkey> = info
+        let static_account_keys: FxHashSet<Pubkey> = info
             .transaction
             .message
             .static_account_keys()
@@ -395,7 +395,7 @@ impl MessageDeshredTransactionInfo {
     }
 
     pub fn from_geyser_v2(info: &ReplicaDeshredTransactionInfoV2<'_>) -> Self {
-        let static_account_keys: FoldHashSet<Pubkey> = info
+        let static_account_keys: FxHashSet<Pubkey> = info
             .transaction
             .message
             .static_account_keys()

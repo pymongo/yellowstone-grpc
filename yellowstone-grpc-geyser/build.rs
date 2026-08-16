@@ -1,6 +1,6 @@
 use {
     cargo_lock::Lockfile,
-    std::collections::HashSet,
+    rustc_hash::FxHashSet,
     tonic_prost_build::manual::{Builder, Method, Service},
 };
 
@@ -144,7 +144,7 @@ fn get_pkg_version(lockfile: &Lockfile, pkg_name: &str) -> String {
         .iter()
         .filter(|pkg| pkg.name.as_str() == pkg_name)
         .map(|pkg| pkg.version.to_string())
-        .collect::<HashSet<_>>()
+        .collect::<FxHashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>()
         .join(",")

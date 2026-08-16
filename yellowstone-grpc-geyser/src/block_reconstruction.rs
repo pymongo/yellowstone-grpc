@@ -2,11 +2,10 @@ use {
     crate::{
         metrics,
         plugin::message::{
-            Message, MessageAccount, MessageBlock, MessageBlockMeta, MessageEntry, MessageSlot,
-            MessageTransaction, SlotStatus,
+            Message, MessageBlockMeta, MessageSlot, MessageTransaction, SlotStatus,
         },
     },
-    foldhash::{HashMap as FoldHashMap, HashMapExt},
+    rustc_hash::FxHashMap,
     solana_commitment_config::CommitmentLevel,
     solana_hash::Hash,
     solana_pubkey::Pubkey,
@@ -24,11 +23,9 @@ use {
 
 pub struct ProcessingSlot {
     original_messages: Vec<Message>,
-    account_write_version_map: FoldHashMap<Pubkey, u64>,
+    account_write_version_map: FxHashMap<Pubkey, u64>,
     blockmeta: Option<Arc<MessageBlockMeta>>,
     transactions: Vec<Arc<MessageTransaction>>,
-    accounts: Vec<Arc<MessageAccount>>,
-    entries: Vec<Arc<MessageEntry>>,
     is_sealed: bool,
 }
 
@@ -36,11 +33,12 @@ impl Default for ProcessingSlot {
     fn default() -> Self {
         Self {
             original_messages: Vec::with_capacity(4096),
-            account_write_version_map: FoldHashMap::with_capacity(4096),
+            account_write_version_map: FxHashMap::with_capacity_and_hasher(
+                4096,
+                Default::default(),
+            ),
             blockmeta: None,
             transactions: Vec::with_capacity(4096),
-            accounts: Vec::with_capacity(4096),
-            entries: Vec::with_capacity(64),
             is_sealed: false,
         }
     }
@@ -64,17 +62,11 @@ impl ProcessingSlot {
                         }
                     })
                     .or_insert(write_version);
-                self.accounts.push(Arc::clone(message_account));
-                // Handle account event
             }
             Message::Transaction(message_transaction) => {
                 self.transactions.push(Arc::clone(message_transaction));
-                // Handle transaction event
             }
-            Message::Entry(message_entry) => {
-                self.entries.push(Arc::clone(message_entry));
-                // Handle entry event
-            }
+            Message::Entry(_message_entry) => {}
             _ => {
                 // Handle other events if necessary
                 return;
@@ -97,30 +89,14 @@ impl ProcessingSlot {
             return Err(TrySealError::NotSealable);
         }
 
-        let expected_entry_count = blockmeta.entries_count as usize;
-        if self.entries.len() < expected_entry_count {
-            return Err(TrySealError::NotSealable);
-        }
+        // Entry ingest is disabled; waiting on entries_count would prevent slots from
+        // freezing so Processed/Confirmed/Finalized slot + blocks_meta never emit.
         self.is_sealed = true;
         Ok(())
     }
 
     pub fn seal(self) -> FrozenBlock {
         let block_meta = self.blockmeta.expect("should be sealable");
-        let account_info_vec = self
-            .accounts
-            .into_iter()
-            .filter_map(|account| {
-                let write_version = self
-                    .account_write_version_map
-                    .get(&account.account.pubkey)?;
-                if *write_version == account.account.write_version {
-                    Some(account)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
         // Yet another clone of all the messages, but that prevents from doing this later on anyway, while making iterator code easier to implement.
         let dedup_messages = self
             .original_messages
@@ -151,17 +127,9 @@ impl ProcessingSlot {
             );
         }
 
-        let pre_computed_message_block = Arc::new(MessageBlock::new(
-            Arc::clone(&block_meta),
-            self.transactions,
-            account_info_vec,
-            self.entries,
-        ));
-
         FrozenBlock {
             original_messages: Arc::new(dedup_messages),
             block_meta,
-            pre_computed_message_block,
         }
     }
 }
@@ -169,14 +137,9 @@ impl ProcessingSlot {
 pub struct FrozenBlock {
     original_messages: Arc<Vec<Message>>,
     block_meta: Arc<MessageBlockMeta>,
-    pre_computed_message_block: Arc<MessageBlock>,
 }
 
 impl FrozenBlock {
-    pub fn get_message_block(&self) -> Arc<MessageBlock> {
-        Arc::clone(&self.pre_computed_message_block)
-    }
-
     pub fn messages(&self) -> Arc<Vec<Message>> {
         Arc::clone(&self.original_messages)
     }
@@ -192,9 +155,9 @@ pub struct SlotProgression {
 }
 
 pub struct BlockMachineStorage {
-    processing_slots: FoldHashMap<u64, ProcessingSlot>,
+    processing_slots: FxHashMap<u64, ProcessingSlot>,
     replayed_slot: BTreeMap<u64, Arc<FrozenBlock>>,
-    slot_commitment_progression_map: FoldHashMap<u64, SlotProgression>,
+    slot_commitment_progression_map: FxHashMap<u64, SlotProgression>,
     replayed_capacity: usize,
     ready_queue: VecDeque<(SlotCommitmentStatusUpdate, Arc<FrozenBlock>)>,
     state: BlocksStateMachine,
@@ -267,10 +230,16 @@ pub const MINIMUM_FINALIZED_SLOT_TO_BUFFER: usize = 10;
 impl BlockMachineStorage {
     pub fn new(replayed_capacity: usize) -> Self {
         Self {
-            processing_slots: FoldHashMap::with_capacity(replayed_capacity),
+            processing_slots: FxHashMap::with_capacity_and_hasher(
+                replayed_capacity,
+                Default::default(),
+            ),
             replayed_slot: BTreeMap::new(),
             replayed_capacity,
-            slot_commitment_progression_map: FoldHashMap::with_capacity(replayed_capacity),
+            slot_commitment_progression_map: FxHashMap::with_capacity_and_hasher(
+                replayed_capacity,
+                Default::default(),
+            ),
             ready_queue: VecDeque::with_capacity(replayed_capacity),
             state: BlocksStateMachine::default(),
             min_slot: None,
@@ -563,8 +532,8 @@ mod tests {
             MessageTransactionInfo, SlotStatus,
         },
         bytes::Bytes,
-        foldhash::{HashSet as FoldHashSet, HashSetExt},
         prost_types::Timestamp,
+        rustc_hash::FxHashSet,
         solana_hash::Hash,
         solana_pubkey::Pubkey,
         solana_signature::Signature,
@@ -604,7 +573,7 @@ mod tests {
                 transaction: Default::default(),
                 meta: Default::default(),
                 index: 0,
-                account_keys: FoldHashSet::new(),
+                account_keys: FxHashSet::default(),
                 pre_encoded: OnceLock::new(),
                 token_owners_all: OnceLock::new(),
                 token_owners_changed: OnceLock::new(),
@@ -812,10 +781,16 @@ mod tests {
         slot.blockmeta = Some(make_block_meta_arc(1, 0));
 
         let frozen = slot.seal();
-        let mb = frozen.get_message_block();
-        assert_eq!(mb.accounts.len(), 1);
-        assert_eq!(mb.updated_account_count, 1);
-        assert_eq!(mb.accounts[0].account.write_version, 8);
+        let accounts: Vec<_> = frozen
+            .messages()
+            .iter()
+            .filter_map(|m| match m {
+                Message::Account(a) => Some(a),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].account.write_version, 8);
     }
 
     // ─── cmp_commitment_level ────────────────────────────────────────────────
