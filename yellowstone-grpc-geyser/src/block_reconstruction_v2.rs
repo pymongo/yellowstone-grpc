@@ -4,7 +4,7 @@ use {
         plugin::{
             filter::encoder::TransactionEncoder,
             message::{
-                Message, MessageBlockFooter, MessageBlockMeta, MessageSlot, MessageTransaction, SlotStatus,
+                Message, MessageBlockFooter, MessageBlockMeta, MessageSlot, SlotStatus,
             },
         },
     },
@@ -119,7 +119,7 @@ struct BankBuffer {
     account_write_version_map: FxHashMap<Pubkey, u64>,
     blockmeta: Option<Arc<MessageBlockMeta>>,
     footer: Option<Arc<MessageBlockFooter>>,
-    transactions: Vec<Arc<MessageTransaction>>,
+    transaction_count: usize,
     is_sealed: bool,
 }
 
@@ -139,7 +139,7 @@ impl BankBuffer {
             ),
             blockmeta: None,
             footer: None,
-            transactions: Vec::with_capacity(4096),
+            transaction_count: 0,
             is_sealed: false,
         }
     }
@@ -170,7 +170,7 @@ impl BankBuffer {
                 if message_transaction.transaction.get_pre_encoded().is_none() {
                     TransactionEncoder::pre_encode(&message_transaction.transaction);
                 }
-                self.transactions.push(Arc::clone(message_transaction));
+                self.transaction_count += 1;
             }
             Message::Entry(_) => {}
             Message::Slot(message_slot)
@@ -199,7 +199,7 @@ impl BankBuffer {
         };
 
         let expected_txn_count = blockmeta.executed_transaction_count as usize;
-        if self.transactions.len() < expected_txn_count {
+        if self.transaction_count < expected_txn_count {
             return Err(TrySealError::NotSealable);
         }
 
@@ -239,12 +239,12 @@ impl BankBuffer {
             dedup_messages.push(message);
         }
 
-        if self.transactions.len() != block_meta.executed_transaction_count as usize {
+        if self.transaction_count != block_meta.executed_transaction_count as usize {
             metrics::incr_geyser_block_mismatch_transaction();
             log::warn!(
                 "Block meta transaction count {} does not match actual transaction count {} for slot {}",
                 block_meta.executed_transaction_count,
-                self.transactions.len(),
+                self.transaction_count,
                 block_meta.slot
             );
         }
