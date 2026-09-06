@@ -1,7 +1,7 @@
 use {
     crate::{
         metrics,
-        plugin::message::{Message, MessageBlockMeta, MessageSlot, MessageTransaction, SlotStatus},
+        plugin::message::{Message, MessageBlockMeta, MessageSlot, SlotStatus},
     },
     rustc_hash::FxHashMap,
     solana_clock::{BankId, Slot},
@@ -80,7 +80,7 @@ struct BankBuffer {
     original_messages: Vec<Message>,
     account_write_version_map: FxHashMap<Pubkey, u64>,
     blockmeta: Option<Arc<MessageBlockMeta>>,
-    transactions: Vec<Arc<MessageTransaction>>,
+    transaction_count: usize,
     is_sealed: bool,
 }
 
@@ -98,7 +98,7 @@ impl BankBuffer {
                 Default::default(),
             ),
             blockmeta: None,
-            transactions: Vec::with_capacity(4096),
+            transaction_count: 0,
             is_sealed: false,
         }
     }
@@ -122,8 +122,8 @@ impl BankBuffer {
                     self.musthave_sysvar_accounts_bitmask |= 1 << position;
                 }
             }
-            Message::Transaction(message_transaction) => {
-                self.transactions.push(Arc::clone(message_transaction));
+            Message::Transaction(_) => {
+                self.transaction_count += 1;
             }
             Message::Entry(_message_entry) => {}
             _ => return,
@@ -146,7 +146,7 @@ impl BankBuffer {
         };
 
         let expected_txn_count = blockmeta.executed_transaction_count as usize;
-        if self.transactions.len() < expected_txn_count {
+        if self.transaction_count < expected_txn_count {
             return Err(TrySealError::NotSealable);
         }
 
@@ -173,12 +173,12 @@ impl BankBuffer {
             })
             .collect::<Vec<_>>();
 
-        if self.transactions.len() != block_meta.executed_transaction_count as usize {
+        if self.transaction_count != block_meta.executed_transaction_count as usize {
             metrics::incr_geyser_block_mismatch_transaction();
             log::warn!(
                 "Block meta transaction count {} does not match actual transaction count {} for slot {}",
                 block_meta.executed_transaction_count,
-                self.transactions.len(),
+                self.transaction_count,
                 block_meta.slot
             );
         }
