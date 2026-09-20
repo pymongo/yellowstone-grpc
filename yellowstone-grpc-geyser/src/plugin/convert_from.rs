@@ -280,7 +280,9 @@ pub fn create_reward(reward: proto::Reward) -> CreateResult<Reward> {
             proto::RewardType::Staking => Some(RewardType::Staking),
             proto::RewardType::Voting => Some(RewardType::Voting),
             proto::RewardType::DeactivatedStake => Some(RewardType::DeactivatedStake),
-            proto::RewardType::VatDebit => Some(RewardType::VATDebit),
+            proto::RewardType::VatDebit => {
+                return Err("VATDebit rewards are not supported by Agave 4.3.0-rc.0");
+            }
         },
         commission: if reward.commission.is_empty() {
             None
