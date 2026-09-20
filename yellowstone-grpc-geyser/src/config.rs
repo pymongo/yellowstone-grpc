@@ -27,6 +27,13 @@ pub const DEFAULT_TRITON_AUTH_MAX_CONCURRENT_REQUESTS: NonZeroUsize =
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub libpath: String,
+    /// Retain transaction counts but omit vote payloads from all subscription commitments.
+    /// Transaction and transaction-status filters must explicitly set `vote: false`.
+    #[serde(default)]
+    pub drop_vote_payloads: bool,
+    /// Enable the optional SubscribeGossip contact-info feed.
+    #[serde(default = "Config::default_contact_info_notifications_enabled")]
+    pub contact_info_notifications_enabled: bool,
     #[serde(default)]
     pub log: ConfigLog,
     #[serde(default)]
@@ -41,6 +48,10 @@ pub struct Config {
 }
 
 impl Config {
+    const fn default_contact_info_notifications_enabled() -> bool {
+        true
+    }
+
     fn load_from_str(config: &str) -> PluginResult<Self> {
         serde_json::from_str(config).map_err(|error| GeyserPluginError::ConfigFileReadError {
             msg: error.to_string(),
@@ -860,5 +871,23 @@ mod tests {
         let json = r#""not_valid""#;
         let result: Result<GrpcAddresses, _> = serde_json::from_str(json);
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod optimization_tests {
+    use super::Config;
+
+    #[test]
+    fn optimization_config_defaults_and_opt_in() {
+        let defaults = Config::load_from_str(
+            r#"{"libpath":"plugin.so","grpc":{"address":"127.0.0.1:10000"}}"#,
+        )
+        .unwrap();
+        assert!(!defaults.drop_vote_payloads);
+        assert!(defaults.contact_info_notifications_enabled);
+        let enabled = Config::load_from_str(r#"{"libpath":"plugin.so","grpc":{"address":"127.0.0.1:10000"},"drop_vote_payloads":true,"contact_info_notifications_enabled":false}"#).unwrap();
+        assert!(enabled.drop_vote_payloads);
+        assert!(!enabled.contact_info_notifications_enabled);
     }
 }

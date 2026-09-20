@@ -39,7 +39,7 @@ use {
         pki_types::{pem::PemObject, PrivateKeyDer},
         ServerConfig,
     },
-    solana_clock::{Slot, MAX_RECENT_BLOCKHASHES},
+    solana_clock::{BankId, Slot, MAX_RECENT_BLOCKHASHES},
     std::{
         io,
         num::NonZeroUsize,
@@ -311,10 +311,18 @@ impl BlockMetaStorage {
     }
 }
 
+/// Internal ingress events. Vote markers never reach subscribers or replay storage.
+#[derive(Debug)]
+pub enum IngestMessage {
+    Message(Message),
+    Vote { slot: Slot, bank_id: BankId },
+}
+
 #[derive(Clone)]
 pub enum BlockReconstructionMessage {
     Single(Message),
     Batch(Arc<Vec<Message>>),
+    Vote { slot: Slot, bank_id: BankId },
 }
 
 pub type BroadcastedMessage = Arc<Vec<Message>>;
@@ -670,6 +678,8 @@ impl interceptor::Interceptor for XTokenInterceptor {
 
 #[derive(Clone)]
 pub struct GrpcService {
+    drop_vote_payloads: bool,
+    contact_info_notifications_enabled: bool,
     config_snapshot_client_channel_capacity: usize,
     config_channel_capacity: usize,
     config_filter_limits: Arc<FilterLimits>,
@@ -837,6 +847,8 @@ impl GrpcService {
     #[allow(clippy::type_complexity)]
     pub async fn create<St>(
         config: ConfigGrpc,
+        drop_vote_payloads: bool,
+        contact_info_notifications_enabled: bool,
         is_reload: bool,
         service_cancellation_token: CancellationToken,
         task_tracker: TaskTracker,
@@ -844,7 +856,7 @@ impl GrpcService {
         messages_rx: St,
     ) -> anyhow::Result<GrpcServiceResult>
     where
-        St: BatchStream<Item = Message> + Unpin + Send + 'static,
+        St: BatchStream<Item = IngestMessage> + Unpin + Send + 'static,
     {
         // Bind all configured addresses (TCP or Unix domain socket)
         let mut listeners = Vec::new();
@@ -1044,10 +1056,12 @@ impl GrpcService {
 
         let (contact_info_tx, contact_info_rx) = mpsc::unbounded_channel();
 
-        task_tracker.spawn(contact_info::contact_info_loop(
-            UnboundedReceiverStream::new(contact_info_rx),
-            Arc::clone(&contact_info_state),
-        ));
+        if contact_info_notifications_enabled {
+            task_tracker.spawn(contact_info::contact_info_loop(
+                UnboundedReceiverStream::new(contact_info_rx),
+                Arc::clone(&contact_info_state),
+            ));
+        }
 
         // Capture traffic reporting threshold before config is moved
         let traffic_reporting_threshold = config
@@ -1064,6 +1078,8 @@ impl GrpcService {
         // Build the shared GeyserServer (Clone-able because GrpcService: Clone)
         let max_decoding_message_size = config.max_decoding_message_size;
         let mut service = GeyserServer::new(Self {
+            drop_vote_payloads,
+            contact_info_notifications_enabled,
             config_snapshot_client_channel_capacity: config.snapshot_client_channel_capacity,
             config_channel_capacity: config.channel_capacity,
             config_filter_limits: Arc::new(config.filter_limits),
@@ -1281,34 +1297,40 @@ impl GrpcService {
         broadcast: SubscriberChannels,
         block_reconstruction_tx: mpsc::UnboundedSender<BlockReconstructionMessage>,
     ) where
-        St: BatchStream<Item = Message> + Unpin + Send + 'static,
+        St: BatchStream<Item = IngestMessage> + Unpin + Send + 'static,
     {
         const MESSAGE_BATCH_SIZE: usize = 1024;
         // let mut message_batch = Vec::with_capacity(MESSAGE_BATCH_SIZE);
         struct PartitionedBuffer {
             message_batch: Vec<Message>,
-            blockmeta_batch: Option<Message>,
+            control_message: Option<BlockReconstructionMessage>,
         }
-        impl Buffer<Message> for PartitionedBuffer {
-            fn accumulate(&mut self, item: Message) -> Result<(), Message> {
-                if self.message_batch.len() == self.message_batch.capacity() {
+        impl Buffer<IngestMessage> for PartitionedBuffer {
+            fn accumulate(&mut self, item: IngestMessage) -> Result<(), IngestMessage> {
+                if !self.ready() {
                     return Err(item);
                 }
                 match item {
-                    Message::BlockMeta(_) => self.blockmeta_batch = Some(item),
-                    _ => self.message_batch.push(item),
+                    IngestMessage::Message(message @ Message::BlockMeta(_)) => {
+                        self.control_message = Some(BlockReconstructionMessage::Single(message));
+                    }
+                    IngestMessage::Message(message) => self.message_batch.push(message),
+                    IngestMessage::Vote { slot, bank_id } => {
+                        self.control_message =
+                            Some(BlockReconstructionMessage::Vote { slot, bank_id });
+                    }
                 }
                 Ok(())
             }
 
             fn ready(&self) -> bool {
                 self.message_batch.len() < self.message_batch.capacity()
-                    && self.blockmeta_batch.is_none()
+                    && self.control_message.is_none()
             }
         }
         let mut buffer = PartitionedBuffer {
             message_batch: Vec::with_capacity(MESSAGE_BATCH_SIZE),
-            blockmeta_batch: None,
+            control_message: None,
         };
         loop {
             let batch_size_maybe = messages_rx.next_batch(&mut buffer).await;
@@ -1330,13 +1352,11 @@ impl GrpcService {
                 }
             }
 
-            if let Some(blockmeta_message) = buffer.blockmeta_batch.take() {
+            // Flush earlier payloads first: a vote count can make the bank seal.
+            if let Some(control_message) = buffer.control_message.take() {
                 metrics::message_queue_size_dec();
 
-                if block_reconstruction_tx
-                    .send(BlockReconstructionMessage::Single(blockmeta_message))
-                    .is_ok()
-                {
+                if block_reconstruction_tx.send(control_message).is_ok() {
                     metrics::block_reconstruction_queue_size_inc();
                 }
             }
@@ -1377,6 +1397,9 @@ impl GrpcService {
 
                     for messages in buffered_messages.drain(..) {
                         match messages {
+                            BlockReconstructionMessage::Vote { slot, bank_id } => {
+                                block_machine.add_vote(slot, bank_id);
+                            }
                             BlockReconstructionMessage::Batch(messages) => {
                                 for message in messages.iter() {
                                     if let Message::Slot(slot_message) = message {
@@ -2044,6 +2067,22 @@ impl GrpcService {
     }
 }
 
+fn validate_vote_filters(request: &SubscribeRequest, drop_vote_payloads: bool) -> TonicResult<()> {
+    if drop_vote_payloads
+        && request.ping.is_none()
+        && request
+            .transactions
+            .values()
+            .chain(request.transactions_status.values())
+            .any(|filter| filter.vote != Some(false))
+    {
+        return Err(Status::invalid_argument(
+            "drop_vote_payloads is enabled: transaction and transaction-status filters require vote: false",
+        ));
+    }
+    Ok(())
+}
+
 #[tonic::async_trait]
 impl Geyser for GrpcService {
     type SubscribeStream = LoadAwareReceiver<TonicResult<FilteredUpdate>>;
@@ -2143,6 +2182,7 @@ impl Geyser for GrpcService {
             .unwrap_or_else(|| "".to_owned());
 
         let config_filter_limits = Arc::clone(&self.config_filter_limits);
+        let drop_vote_payloads = self.drop_vote_payloads;
         let incoming_stream_tx = stream_tx.clone();
         let incoming_client_tx = client_tx;
         let incoming_cancellation_token = client_cancellation_token.child_token();
@@ -2165,6 +2205,12 @@ impl Geyser for GrpcService {
                     message = request.get_mut().message() => match message {
                         Ok(Some(request)) => {
                             filter_names.try_clean();
+
+                            if let Err(error) = validate_vote_filters(&request, drop_vote_payloads) {
+                                let _ = incoming_stream_tx.send(Err(error)).await;
+                                let _ = incoming_client_tx.send(None);
+                                break;
+                            }
 
                             if let Err(error) = match Filter::new(&request, &config_filter_limits, &mut filter_names) {
                                 Ok(filter) => {
@@ -2385,6 +2431,9 @@ impl Geyser for GrpcService {
         request: Request<SubscribeGossipRequest>,
     ) -> TonicResult<Response<Self::SubscribeGossipStream>> {
         incr_grpc_method_call_count("subscribe_gossip");
+        if !self.contact_info_notifications_enabled {
+            return Err(Status::unimplemented("contact-info notifications disabled"));
+        }
 
         let subscriber_id = request
             .extensions()
@@ -2551,6 +2600,87 @@ mod tests {
         std::collections::HashMap,
         yellowstone_grpc_proto::prelude::{SubscribeRequest, SubscribeRequestFilterSlots},
     };
+
+    #[test]
+    fn optimization_vote_filters_require_explicit_exclusion() {
+        use yellowstone_grpc_proto::prelude::SubscribeRequestFilterTransactions;
+        for status in [false, true] {
+            for vote in [None, Some(true), Some(false)] {
+                let mut request = SubscribeRequest::default();
+                let filters = if status {
+                    &mut request.transactions_status
+                } else {
+                    &mut request.transactions
+                };
+                filters.insert(
+                    "tx".into(),
+                    SubscribeRequestFilterTransactions {
+                        vote,
+                        ..Default::default()
+                    },
+                );
+                assert!(validate_vote_filters(&request, false).is_ok());
+                assert_eq!(
+                    validate_vote_filters(&request, true).is_ok(),
+                    vote == Some(false)
+                );
+            }
+        }
+        assert!(validate_vote_filters(&SubscribeRequest::default(), true).is_ok());
+    }
+
+    #[tokio::test]
+    async fn optimization_vote_markers_preserve_ingress_order() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (reconstruction_tx, mut reconstruction_rx) = mpsc::unbounded_channel();
+        let broadcast = SubscriberChannels::new(8, 8, 8);
+        let mut processed = broadcast.subscribe(CommitmentLevel::Processed);
+        let make_message = |slot| {
+            Message::Slot(Arc::new(MessageSlot {
+                slot,
+                parent: None,
+                status: SlotStatus::CreatedBank,
+                dead_error: None,
+                created_at: Timestamp::default(),
+                bank_id: Some(slot),
+            }))
+        };
+        tx.send(IngestMessage::Message(make_message(100))).unwrap();
+        tx.send(IngestMessage::Vote {
+            slot: 100,
+            bank_id: 100,
+        })
+        .unwrap();
+        tx.send(IngestMessage::Message(make_message(101))).unwrap();
+        drop(tx);
+        GrpcService::geyser_loop(
+            BatchStreamUnboundedReceiver::new(rx),
+            broadcast,
+            reconstruction_tx,
+        )
+        .await;
+        let Some(BlockReconstructionMessage::Batch(before)) = reconstruction_rx.recv().await else {
+            panic!("missing earlier payload")
+        };
+        assert_eq!(before[0].get_slot(), 100);
+        assert!(matches!(
+            reconstruction_rx.recv().await,
+            Some(BlockReconstructionMessage::Vote {
+                slot: 100,
+                bank_id: 100
+            })
+        ));
+        let Some(BlockReconstructionMessage::Batch(after)) = reconstruction_rx.recv().await else {
+            panic!("missing later payload")
+        };
+        assert_eq!(after[0].get_slot(), 101);
+        assert_eq!(processed.recv().await.unwrap().len(), 1);
+        assert_eq!(processed.recv().await.unwrap().len(), 1);
+        assert!(
+            processed.try_recv().is_err(),
+            "vote counts must never be broadcast"
+        );
+    }
 
     fn create_filter_with_slots() -> Filter {
         let config = SubscribeRequest {
@@ -2840,7 +2970,7 @@ mod tests {
         };
 
         struct Harness {
-            messages_tx: mpsc::UnboundedSender<Message>,
+            messages_tx: mpsc::UnboundedSender<IngestMessage>,
             #[allow(dead_code)]
             broadcast_rx: broadcast::Receiver<BroadcastedMessage>,
             deshred_tx: broadcast::Sender<DeshredBroadcastedMessage>,
@@ -2979,15 +3109,27 @@ mod tests {
                 .unwrap();
             harness
                 .messages_tx
-                .send(make_slot(100, SlotStatus::Processed, Some(99)))
+                .send(IngestMessage::Message(make_slot(
+                    100,
+                    SlotStatus::Processed,
+                    Some(99),
+                )))
                 .unwrap();
             harness
                 .messages_tx
-                .send(make_slot(100, SlotStatus::Confirmed, None))
+                .send(IngestMessage::Message(make_slot(
+                    100,
+                    SlotStatus::Confirmed,
+                    None,
+                )))
                 .unwrap();
             harness
                 .messages_tx
-                .send(make_slot(100, SlotStatus::Finalized, None))
+                .send(IngestMessage::Message(make_slot(
+                    100,
+                    SlotStatus::Finalized,
+                    None,
+                )))
                 .unwrap();
 
             let deshred_batches = drain_deshred(&mut harness.deshred_rx).await;

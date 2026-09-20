@@ -102,7 +102,7 @@ where
         if !is_startup && !*state.complete_tx.borrow() {
             let nodes = state.map.lock().expect("poisoned").nodes.len();
             info!("contact info startup replay complete: {nodes} nodes");
-            let _ = state.complete_tx.send(true);
+            state.complete_tx.send_replace(true);
         }
 
         // One critical section: subscribers must never observe a revision the map has not
@@ -411,6 +411,23 @@ mod tests {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         *seed >> 33
+    }
+
+    #[tokio::test]
+    async fn optimization_completion_survives_without_subscribers() {
+        let state = ContactInfoState::new(4);
+        contact_info_loop(
+            futures::stream::iter([live(node(Pubkey::new_unique(), 1))]),
+            Arc::clone(&state),
+        )
+        .await;
+        assert!(*state.complete_tx.borrow());
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            state.wait_until_complete(),
+        )
+        .await
+        .expect("a later subscriber must not wait forever");
     }
 
     #[tokio::test]
