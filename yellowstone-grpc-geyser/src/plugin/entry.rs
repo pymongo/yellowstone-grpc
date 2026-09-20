@@ -3,7 +3,7 @@ use {
         config::Config,
         contact_info::ContactInfoNotification,
         file_watcher::FileWatcher,
-        grpc::{GrpcService, SubscriberChannels},
+        grpc::{GrpcService, IngestMessage, SubscriberChannels},
         metrics::{self, incr_geyser_event_dropped, PrometheusService},
         plugin::{
             filter::limits::FilterLimits,
@@ -48,8 +48,10 @@ pub struct PluginInner {
     snapshot_channel: Mutex<Option<crossbeam_channel::Sender<Box<Message>>>>,
     snapshot_channel_closed: AtomicBool,
     filter_limits: FilterLimits,
-    grpc_channel: mpsc::UnboundedSender<Message>, // geyser_loop
-    deshred_channel: broadcast::Sender<Message>,  // deshred_client_loop
+    drop_vote_payloads: bool,
+    contact_info_notifications_enabled: bool,
+    grpc_channel: mpsc::UnboundedSender<IngestMessage>, // geyser_loop
+    deshred_channel: broadcast::Sender<Message>,        // deshred_client_loop
     contact_info_channel: mpsc::UnboundedSender<ContactInfoNotification>,
     broadcast_channel: SubscriberChannels, // client_loop
     blocks_meta_tx: Option<mpsc::UnboundedSender<Message>>,
@@ -61,6 +63,10 @@ pub struct PluginInner {
 impl PluginInner {
     // Sends messages to the geyser_loop
     fn send_message(&self, message: Message) {
+        self.send_ingest(IngestMessage::Message(message));
+    }
+
+    fn send_ingest(&self, message: IngestMessage) {
         if self.grpc_channel.send(message).is_ok() {
             metrics::message_queue_size_inc();
         }
@@ -122,6 +128,8 @@ impl GeyserPlugin for Plugin {
     fn on_load(&mut self, config_file: &str, is_reload: bool) -> PluginResult<()> {
         let config = Config::load_from_file(config_file)?;
         let filter_limits = config.grpc.filter_limits.clone();
+        let drop_vote_payloads = config.drop_vote_payloads;
+        let contact_info_notifications_enabled = config.contact_info_notifications_enabled;
 
         // Setup logger
         solana_logger::setup_with_default(&config.log.level);
@@ -180,6 +188,8 @@ impl GeyserPlugin for Plugin {
             let grpc_channel_rx = BatchStreamUnboundedReceiver::new(grpc_channel_receiver);
             let grpc_service_result = GrpcService::create(
                 config.grpc,
+                drop_vote_payloads,
+                contact_info_notifications_enabled,
                 is_reload,
                 grpc_cancellation_token,
                 grpc_task_tracker,
@@ -206,6 +216,8 @@ impl GeyserPlugin for Plugin {
             snapshot_channel: Mutex::new(grpc_service_result.snapshot_tx),
             snapshot_channel_closed: AtomicBool::new(false),
             filter_limits,
+            drop_vote_payloads,
+            contact_info_notifications_enabled,
             grpc_channel: grpc_channel_tx,
             deshred_channel: grpc_service_result.deshred_broadcast_tx,
             contact_info_channel: grpc_service_result.contact_info_tx,
@@ -518,6 +530,13 @@ impl GeyserPlugin for Plugin {
                 ReplicaTransactionInfoVersions::V0_0_3(info) => info,
             };
 
+            if inner.drop_vote_payloads && transaction.is_vote {
+                // Keep counts in the same FIFO as account writes and block metadata.
+                // Skipping the notification entirely would prevent banks from sealing.
+                inner.send_ingest(IngestMessage::Vote { slot, bank_id });
+                return Ok(());
+            }
+
             let message = Message::Transaction(Arc::new(MessageTransaction::from_geyser(
                 transaction,
                 slot,
@@ -673,7 +692,9 @@ impl GeyserPlugin for Plugin {
     }
 
     fn contact_info_notifications_enabled(&self) -> bool {
-        true
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.contact_info_notifications_enabled)
     }
 
     fn account_data_notifications_enabled(&self) -> bool {

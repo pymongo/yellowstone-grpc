@@ -414,6 +414,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn optimization_completion_survives_without_subscribers() {
+        let state = ContactInfoState::new(4);
+        contact_info_loop(
+            futures::stream::iter([live(node(Pubkey::new_unique(), 1))]),
+            Arc::clone(&state),
+        )
+        .await;
+        assert!(*state.complete_tx.borrow());
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            state.wait_until_complete(),
+        )
+        .await
+        .expect("a later subscriber must not wait forever");
+    }
+
+    #[tokio::test]
     async fn applies_updates_and_removals_in_order() {
         let state = ContactInfoState::new(64);
         let (tx, rx) = mpsc::unbounded_channel();
