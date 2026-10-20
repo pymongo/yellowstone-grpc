@@ -24,12 +24,11 @@ cargo-fmt && cargo run --bin config-check -- --config yellowstone-grpc-geyser/co
 
 ### Optional ingestion optimizations
 
-These top-level plugin options take effect when the plugin is loaded:
+This top-level plugin option takes effect when the plugin is loaded:
 
 ```json
 {
-  "contact_info_notifications_enabled": false,
-  "drop_vote_payloads": true
+  "contact_info_notifications_enabled": false
 }
 ```
 
@@ -37,16 +36,6 @@ These top-level plugin options take effect when the plugin is loaded:
 disables Agave contact-info callbacks and the gossip table worker; `SubscribeGossip`
 returns `UNIMPLEMENTED`. Account, transaction, slot and block-metadata feeds are
 unaffected.
-
-`drop_vote_payloads` defaults to `false`. When enabled, vote callbacks produce only
-an internal slot/bank count marker, avoiding vote transaction conversion and payload
-retention. Counts still participate in bank sealing, so slot commitments and block
-metadata retain their normal total transaction counts. Markers share the payload
-FIFO and never enter broadcasts or replay storage. Non-vote transaction payloads
-remain available at all commitments and in replay. Transaction and transaction-status
-subscription filters must explicitly set `vote: false`; filters requesting votes or
-omitting `vote` are rejected with `INVALID_ARGUMENT`. This optimized branch already
-disables full reconstructed-block broadcasts.
 
 ### gRPC listen, TLS, and auth configuration
 

@@ -48,7 +48,6 @@ pub struct PluginInner {
     snapshot_channel: Mutex<Option<crossbeam_channel::Sender<Box<Message>>>>,
     snapshot_channel_closed: AtomicBool,
     filter_limits: FilterLimits,
-    drop_vote_payloads: bool,
     contact_info_notifications_enabled: bool,
     grpc_channel: mpsc::UnboundedSender<IngestMessage>, // geyser_loop
     deshred_channel: broadcast::Sender<Message>,        // deshred_client_loop
@@ -128,7 +127,6 @@ impl GeyserPlugin for Plugin {
     fn on_load(&mut self, config_file: &str, is_reload: bool) -> PluginResult<()> {
         let config = Config::load_from_file(config_file)?;
         let filter_limits = config.grpc.filter_limits.clone();
-        let drop_vote_payloads = config.drop_vote_payloads;
         let contact_info_notifications_enabled = config.contact_info_notifications_enabled;
 
         // Setup logger
@@ -188,7 +186,6 @@ impl GeyserPlugin for Plugin {
             let grpc_channel_rx = BatchStreamUnboundedReceiver::new(grpc_channel_receiver);
             let grpc_service_result = GrpcService::create(
                 config.grpc,
-                drop_vote_payloads,
                 contact_info_notifications_enabled,
                 is_reload,
                 grpc_cancellation_token,
@@ -216,7 +213,6 @@ impl GeyserPlugin for Plugin {
             snapshot_channel: Mutex::new(grpc_service_result.snapshot_tx),
             snapshot_channel_closed: AtomicBool::new(false),
             filter_limits,
-            drop_vote_payloads,
             contact_info_notifications_enabled,
             grpc_channel: grpc_channel_tx,
             deshred_channel: grpc_service_result.deshred_broadcast_tx,
@@ -529,13 +525,6 @@ impl GeyserPlugin for Plugin {
                 }
                 ReplicaTransactionInfoVersions::V0_0_3(info) => info,
             };
-
-            if inner.drop_vote_payloads && transaction.is_vote {
-                // Keep counts in the same FIFO as account writes and block metadata.
-                // Skipping the notification entirely would prevent banks from sealing.
-                inner.send_ingest(IngestMessage::Vote { slot, bank_id });
-                return Ok(());
-            }
 
             let message = Message::Transaction(Arc::new(MessageTransaction::from_geyser(
                 transaction,

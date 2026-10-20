@@ -488,15 +488,6 @@ impl BlockMachineStorage {
         }
     }
 
-    /// Count an omitted vote without retaining its signature, transaction or status meta.
-    pub fn add_vote(&mut self, slot: Slot, bank_id: BankId) {
-        self.observe_slot(slot);
-        if let Some(bank) = self.bank_for_data(slot, bank_id) {
-            bank.transaction_count += 1;
-            self.try_seal_bank(bank_id);
-        }
-    }
-
     /// Tracks forward progress and periodically sweeps genuinely orphaned per-slot state
     /// that fell too far behind to ever plausibly resolve -- see `STALE_SLOT_THRESHOLD`.
     fn observe_slot(&mut self, slot: Slot) {
@@ -1374,63 +1365,6 @@ mod tests {
     }
 
     #[test]
-    fn optimization_votes_count_without_payloads_at_all_commitments() {
-        use crate::plugin::filter::fixtures;
-        for nonvotes in [0, 1] {
-            let mut storage = BlockMachineStorage::new(10);
-            // A vote can arrive before CreatedBank and must still count.
-            storage.add_vote(100, 100);
-            storage.add(make_created_bank_msg(100, Some(99), 100));
-            add_musthave_sysvars(&mut storage, 100, 100);
-            if nonvotes == 1 {
-                storage.add(Message::Transaction(fixtures::message_transaction(
-                    Default::default(),
-                    vec![],
-                    false,
-                    Default::default(),
-                )));
-            }
-            let Message::BlockMeta(mut meta) = make_block_meta_msg(100, 99, 100) else {
-                unreachable!()
-            };
-            Arc::make_mut(&mut meta).executed_transaction_count = 2 + nonvotes;
-            storage.add(Message::BlockMeta(meta));
-            // Commitment may arrive before all transaction callbacks.
-            storage.add(make_commitment_msg(
-                100,
-                Some(99),
-                SlotStatus::Finalized,
-                100,
-            ));
-            assert!(storage.pop_ready_block().is_none());
-            storage.add_vote(100, 100);
-            for commitment in [
-                CommitmentLevel::Processed,
-                CommitmentLevel::Confirmed,
-                CommitmentLevel::Finalized,
-            ] {
-                let (update, bank) = storage.pop_ready_block().expect("votes must allow sealing");
-                assert_eq!(update.commitment, commitment);
-                assert_eq!(
-                    bank.messages()
-                        .iter()
-                        .filter(|m| matches!(m, Message::Transaction(_)))
-                        .count(),
-                    nonvotes as usize
-                );
-                assert_eq!(
-                    bank.get_block_meta().executed_transaction_count,
-                    2 + nonvotes
-                );
-            }
-            // Late callbacks must not recreate a sealed bank.
-            storage.add_vote(100, 100);
-            assert!(!storage.banks.contains_key(&100));
-            assert!(storage.pop_ready_block().is_none());
-        }
-    }
-
-    #[test]
     fn optimization_seals_without_disabled_entry_notifications() {
         let mut storage = BlockMachineStorage::new(10);
         storage.add(make_created_bank_msg(100, Some(99), 100));
@@ -1454,16 +1388,6 @@ mod tests {
             .messages()
             .iter()
             .all(|m| !matches!(m, Message::Entry(_) | Message::Block(_))));
-    }
-
-    #[test]
-    fn optimization_votes_do_not_revive_dead_banks() {
-        let mut storage = BlockMachineStorage::new(10);
-        storage.add(make_created_bank_msg(100, Some(99), 100));
-        storage.add(make_commitment_msg(100, Some(99), SlotStatus::Dead, 100));
-        storage.add_vote(100, 100);
-        assert!(!storage.banks.contains_key(&100));
-        assert!(storage.pop_ready_block().is_none());
     }
 
     #[test]

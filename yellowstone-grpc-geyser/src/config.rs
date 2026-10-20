@@ -33,10 +33,6 @@ pub const DEFAULT_TRITON_AUTH_MAX_CONCURRENT_REQUESTS: NonZeroUsize =
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub libpath: String,
-    /// Retain transaction counts but omit vote payloads from all subscription commitments.
-    /// Transaction and transaction-status filters must explicitly set `vote: false`.
-    #[serde(default)]
-    pub drop_vote_payloads: bool,
     /// Enable the optional SubscribeGossip contact-info feed.
     #[serde(default = "Config::default_contact_info_notifications_enabled")]
     pub contact_info_notifications_enabled: bool,
@@ -1117,10 +1113,8 @@ mod optimization_tests {
             r#"{"libpath":"plugin.so","grpc":{"address":"127.0.0.1:10000"}}"#,
         )
         .unwrap();
-        assert!(!defaults.drop_vote_payloads);
         assert!(defaults.contact_info_notifications_enabled);
-        let enabled = Config::load_from_str(r#"{"libpath":"plugin.so","grpc":{"address":"127.0.0.1:10000"},"drop_vote_payloads":true,"contact_info_notifications_enabled":false}"#).unwrap();
-        assert!(enabled.drop_vote_payloads);
+        let enabled = Config::load_from_str(r#"{"libpath":"plugin.so","grpc":{"address":"127.0.0.1:10000"},"contact_info_notifications_enabled":false}"#).unwrap();
         assert!(!enabled.contact_info_notifications_enabled);
     }
 }
