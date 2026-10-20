@@ -743,6 +743,8 @@ impl MessageDeshredUpdateParent {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
+    /// Internal completion marker; never encoded as a subscriber update.
+    BankSealed(Arc<crate::block_reconstruction_v2::FrozenBank>),
     DeshredUpdateParent(Arc<MessageDeshredUpdateParent>),
     EntryUpdateParent(Arc<MessageEntryUpdateParent>),
     Slot(Arc<MessageSlot>),
@@ -769,6 +771,7 @@ impl Message {
             Self::BlockFooter(msg) => msg.slot,
             Self::BlockMeta(msg) => msg.slot,
             Self::Block(msg) => msg.meta.slot,
+            Self::BankSealed(bank) => bank.get_block_meta().slot,
         }
     }
 }

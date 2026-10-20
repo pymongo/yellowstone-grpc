@@ -3,9 +3,7 @@ use {
         metrics,
         plugin::{
             filter::encoder::TransactionEncoder,
-            message::{
-                Message, MessageBlockFooter, MessageBlockMeta, MessageSlot, SlotStatus,
-            },
+            message::{Message, MessageBlockFooter, MessageBlockMeta, MessageSlot, SlotStatus},
         },
     },
     rustc_hash::FxHashMap,
@@ -261,6 +259,7 @@ impl BankBuffer {
     }
 }
 
+#[derive(Debug, PartialEq)]
 pub struct FrozenBank {
     bank_id: BankId,
     slot: Slot,
@@ -441,12 +440,24 @@ impl BlockMachineStorage {
     pub fn new(replayed_capacity: usize) -> Self {
         Self {
             banks: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
-            slot_to_banks: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
+            slot_to_banks: FxHashMap::with_capacity_and_hasher(
+                replayed_capacity,
+                Default::default(),
+            ),
             discarded_bank_ids: FxHashMap::default(),
             processed_bank_ids: FxHashMap::default(),
-            resolved_bank_per_slot: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
-            slot_min_commitment: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
-            slot_commitment_progression_map: FxHashMap::with_capacity_and_hasher(replayed_capacity, Default::default()),
+            resolved_bank_per_slot: FxHashMap::with_capacity_and_hasher(
+                replayed_capacity,
+                Default::default(),
+            ),
+            slot_min_commitment: FxHashMap::with_capacity_and_hasher(
+                replayed_capacity,
+                Default::default(),
+            ),
+            slot_commitment_progression_map: FxHashMap::with_capacity_and_hasher(
+                replayed_capacity,
+                Default::default(),
+            ),
             replayed_slot: BTreeMap::new(),
             ready_queue: VecDeque::with_capacity(replayed_capacity),
             replayed_capacity,
@@ -1343,10 +1354,6 @@ mod tests {
             .iter()
             .all(|message| !matches!(message, Message::Slot(_))));
         assert!(Arc::ptr_eq(&frozen.created_bank(), &created_bank));
-        assert!(Arc::ptr_eq(
-            &frozen.get_message_block().created_bank,
-            &created_bank
-        ));
         assert_eq!(frozen.created_bank_index(), 2);
     }
 
@@ -1424,6 +1431,32 @@ mod tests {
     }
 
     #[test]
+    fn optimization_seals_without_disabled_entry_notifications() {
+        let mut storage = BlockMachineStorage::new(10);
+        storage.add(make_created_bank_msg(100, Some(99), 100));
+        add_musthave_sysvars(&mut storage, 100, 100);
+        let Message::BlockMeta(mut meta) = make_block_meta_msg(100, 99, 100) else {
+            unreachable!()
+        };
+        Arc::make_mut(&mut meta).entries_count = 1000;
+        storage.add(Message::BlockMeta(meta));
+        storage.add(make_commitment_msg(
+            100,
+            Some(99),
+            SlotStatus::Processed,
+            100,
+        ));
+        let (_, frozen) = storage
+            .pop_ready_block()
+            .expect("entries must not gate sealing");
+        assert_eq!(frozen.get_block_meta().entries_count, 1000);
+        assert!(frozen
+            .messages()
+            .iter()
+            .all(|m| !matches!(m, Message::Entry(_) | Message::Block(_))));
+    }
+
+    #[test]
     fn optimization_votes_do_not_revive_dead_banks() {
         let mut storage = BlockMachineStorage::new(10);
         storage.add(make_created_bank_msg(100, Some(99), 100));
@@ -1486,6 +1519,7 @@ mod tests {
 
     #[test]
     fn collecting_a_block_pre_encodes_its_transactions() {
+        use crate::plugin::message::MessageTransaction;
         let mut storage = BlockMachineStorage::new(10);
         let bank_id = 7;
         let transaction = fixtures::message_transaction(
@@ -1502,11 +1536,15 @@ mod tests {
         drive_bank_to_processed(&mut storage, 1, bank_id, None);
 
         let (_, frozen) = storage.pop_ready_block().expect("block should be ready");
-        let block = frozen.get_message_block();
-        assert!(block.transactions[0]
-            .transaction
-            .get_pre_encoded()
-            .is_some());
+        let messages = frozen.messages();
+        let transaction = messages
+            .iter()
+            .find_map(|message| match message {
+                Message::Transaction(transaction) => Some(transaction),
+                _ => None,
+            })
+            .expect("transaction payload must be retained");
+        assert!(transaction.transaction.get_pre_encoded().is_some());
     }
 
     #[test]

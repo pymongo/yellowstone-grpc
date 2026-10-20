@@ -5,7 +5,7 @@ use {
             TrustedMetadataAuthenticator,
         },
         billing::{BillingMeteredManager, HttpBillingEventSink},
-        block_reconstruction_v2::BlockMachineStorage,
+        block_reconstruction_v2::{BlockMachineStorage, FrozenBank},
         config::{AuthConfig, AuthKind, BillingConfig, ConfigGrpc, GrpcAddress, GrpcTlsConfig},
         contact_info::{self, ContactInfoState},
         file_watcher::FileWatcher,
@@ -23,9 +23,7 @@ use {
                 name::FilterNames,
                 DeshredFilter, Filter,
             },
-            message::{
-                CommitmentLevel, Message, MessageBlock, MessageBlockMeta, MessageSlot, SlotStatus,
-            },
+            message::{CommitmentLevel, Message, MessageBlockMeta, MessageSlot, SlotStatus},
             proto::geyser_server::{Geyser, GeyserServer},
         },
         ratelimit::{MethodRatelimiter, PrometheusRatelimitCallbacks},
@@ -475,19 +473,19 @@ enum TrySendFailure {
 enum HeldMessage<'a> {
     Pass,
     Skip,
-    /// The sealed block of a held bank, which stands in for its live content.
-    Sealed(&'a MessageBlock),
+    /// Cached content of a sealed held bank, without assembling a full block.
+    Sealed(&'a FrozenBank),
 }
 
 /// Holds back the live content of the banks in `held` and releases a bank when it seals.
-/// A held bank's CreatedBank is held too: it is sent once, right before the sealed block.
+/// A held bank's CreatedBank is held too and restored in original arrival order.
 fn route_held<'a>(held: &mut Vec<BankId>, message: &'a Message) -> HeldMessage<'a> {
     let (bank_id, block) = match message {
         Message::Slot(slot) if slot.status == SlotStatus::CreatedBank => (slot.bank_id, None),
         Message::Account(account) => (account.bank_id, None),
         Message::Transaction(transaction) => (Some(transaction.bank_id), None),
         Message::Entry(entry) => (Some(entry.bank_id), None),
-        Message::Block(block) => (Some(block.meta.bank_id), Some(block)),
+        Message::BankSealed(bank) => (Some(bank.get_block_meta().bank_id), Some(bank.as_ref())),
         _ => (None, None),
     };
     let Some(position) = bank_id.and_then(|id| held.iter().position(|held| *held == id)) else {
@@ -1385,12 +1383,20 @@ impl GrpcService {
                     return Err(item);
                 }
                 match item {
-                    IngestMessage::Message(message @ (Message::BlockMeta(_) | Message::BlockFooter(_))) => {
+                    IngestMessage::Message(
+                        message @ (Message::BlockMeta(_) | Message::BlockFooter(_)),
+                    ) => {
                         self.control_message = Some(BlockReconstructionMessage::Single(message));
                     }
                     IngestMessage::Message(Message::Slot(ref slot))
-                        if matches!(slot.status, SlotStatus::Processed | SlotStatus::Confirmed | SlotStatus::Finalized) => {
-                        let IngestMessage::Message(message) = item else { unreachable!() };
+                        if matches!(
+                            slot.status,
+                            SlotStatus::Processed | SlotStatus::Confirmed | SlotStatus::Finalized
+                        ) =>
+                    {
+                        let IngestMessage::Message(message) = item else {
+                            unreachable!()
+                        };
                         self.control_message = Some(BlockReconstructionMessage::Single(message));
                     }
                     IngestMessage::Message(message) => self.message_batch.push(message),
@@ -1512,6 +1518,9 @@ impl GrpcService {
                         }
 
                         let mut block_messages = Vec::with_capacity(3);
+                        if commitment_level == CommitmentLevel::Processed {
+                            block_messages.push(Message::BankSealed(Arc::clone(&frozen_block)));
+                        }
                         if let Some(block_footer) = frozen_block.get_block_footer() {
                             block_messages.push(Message::BlockFooter(block_footer));
                         }
@@ -1827,12 +1836,19 @@ impl GrpcService {
                         };
                         let sealed_content_sent = match sealed_block {
                             // The held bank's live CreatedBank went out before this client joined.
-                            Some(block) => session
-                                .filter
-                                .get_updates(&Message::Slot(Arc::clone(&block.created_bank)), Some(commitment))
-                                .into_iter()
-                                .try_for_each(try_send)
-                                .and_then(|()| session.filter.try_for_each_block_content_update(block, try_send)),
+                            Some(bank) => {
+                                // Replay the cached content in original arrival order, including
+                                // construction-time account writes before CreatedBank.
+                                let messages = bank.messages();
+                                let created_bank = Message::Slot(bank.created_bank());
+                                let index = bank.created_bank_index();
+                                messages[..index].iter()
+                                    .chain(std::iter::once(&created_bank))
+                                    .chain(messages[index..].iter())
+                                    .try_for_each(|message| session.filter
+                                        .get_updates(message, Some(commitment))
+                                        .into_iter().try_for_each(try_send))
+                            },
                             None => Ok(()),
                         };
                         let sent = sealed_content_sent.and_then(|()| {
@@ -3674,7 +3690,7 @@ mod tests {
             ));
             let send = |messages: Vec<Message>| {
                 for message in messages {
-                    messages_tx.send(message).unwrap();
+                    messages_tx.send(IngestMessage::Message(message)).unwrap();
                 }
             };
 
@@ -3902,7 +3918,7 @@ mod tests {
                     signature,
                     is_vote: false,
                     transaction: convert_to::create_transaction(&versioned),
-                    static_account_keys: FxHashSet::default(),
+                    static_account_keys: rustc_hash::FxHashSet::default(),
                     loaded_writable_addresses: vec![],
                     loaded_readonly_addresses: vec![],
                     completed_data_set_starting_shred_index: 0,
@@ -4057,7 +4073,10 @@ mod tests {
             messages.extend(sealed_bank(10, 2));
             messages.push(bank_status(10, SlotStatus::Processed, Some(2)));
             for message in messages {
-                harness.messages_tx.send(message).unwrap();
+                harness
+                    .messages_tx
+                    .send(IngestMessage::Message(message))
+                    .unwrap();
             }
 
             let is_processed_status = |message: &Message| {
@@ -4081,6 +4100,12 @@ mod tests {
                 received.extend(batch.iter().cloned());
             }
 
+            assert!(
+                received
+                    .iter()
+                    .all(|message| !matches!(message, Message::Block(_))),
+                "full block assembly is disabled"
+            );
             let processed_statuses: Vec<_> = received
                 .iter()
                 .filter_map(|message| match message {
@@ -4089,9 +4114,9 @@ mod tests {
                 })
                 .collect();
             assert_eq!(processed_statuses, vec![Some(2)]);
-            assert!(received.iter().any(
-                |message| matches!(message, Message::Block(block) if block.meta.bank_id == 2)
-            ));
+            assert!(received
+                .iter()
+                .any(|message| matches!(message, Message::BlockMeta(meta) if meta.bank_id == 2)));
 
             drop(harness.messages_tx);
             let _ = tokio::time::timeout(Duration::from_secs(1), harness.handle).await;
@@ -4126,14 +4151,17 @@ mod tests {
             );
             messages.push(bank_status(10, SlotStatus::Processed, Some(2)));
             for message in messages {
-                harness.messages_tx.send(message).unwrap();
+                harness
+                    .messages_tx
+                    .send(IngestMessage::Message(message))
+                    .unwrap();
             }
             tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
                     let batch = harness.broadcast_rx.recv().await.expect("broadcast open");
                     if batch
                         .iter()
-                        .any(|message| matches!(message, Message::Block(_)))
+                        .any(|message| matches!(message, Message::BlockMeta(_)))
                     {
                         break;
                     }
@@ -4176,7 +4204,6 @@ mod tests {
                     "account",
                     "created-bank",
                     "entry",
-                    "block",
                     "block-meta",
                     "status",
                 ]
